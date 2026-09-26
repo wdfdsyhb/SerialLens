@@ -111,6 +111,12 @@ def cmd_detect(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------- watch
 
 def cmd_watch(args: argparse.Namespace) -> int:
+    profile = None
+    if args.profile:
+        from .profile import ProtocolProfile
+
+        profile = ProtocolProfile.load(args.profile)
+        console.print(f"[dim]解码画像「{profile.name}」已加载：{len(profile.fields)} 个字段[/dim]")
     factory = _real_factory(args.port)
     console.print(f"[dim]监视 {args.port} @ {args.baud}，Ctrl+C 停止[/dim]")
     try:
@@ -118,10 +124,15 @@ def cmd_watch(args: argparse.Namespace) -> int:
             while True:
                 data = src.read(nbytes=args.chunk, timeout=0.5)
                 if data:
-                    text = _text_view(data).replace("\r", "")
-                    hexv = data.hex(" ")
-                    console.print(f"[green]TEXT[/green] {text}")
-                    console.print(f"[dim]HEX  {hexv}[/dim]")
+                    if profile:
+                        for values in profile.decode_stream(data):
+                            pretty = "  ".join(f"[cyan]{k}[/cyan]={v}" for k, v in values.items())
+                            console.print(f"[green]●[/green] {pretty}")
+                    else:
+                        text = _text_view(data).replace("\r", "")
+                        hexv = data.hex(" ")
+                        console.print(f"[green]TEXT[/green] {text}")
+                        console.print(f"[dim]HEX  {hexv}[/dim]")
     except KeyboardInterrupt:
         console.print("\n[dim]已停止[/dim]")
     return 0
@@ -140,6 +151,80 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     result = detect(data)
     console.print(Panel(result.summary(), title="本地启发式识别", border_style="cyan"))
     return _finish_analysis(data, args.port, str(args.baud), result.summary(), args)
+
+
+# ---------------------------------------------------------------- learn
+
+def cmd_learn(args: argparse.Namespace) -> int:
+    """协议学习：多帧采样 -> 逐字节变化分析 -> 真值绑定 -> 保存画像."""
+    from .learn import learn
+    from .profile import ProtocolProfile
+    from .serial_port import TempSensorSource
+
+    if args.demo_sensor:
+        console.print("[dim]学习靶场：虚拟温湿度传感器（AA55 帧）多轮采样，每轮改变真值[/dim]")
+        sensor = TempSensorSource(temp_c=25.3, humi_pct=60.0)
+        frames: list[bytes] = []
+        truths: dict[str, float] = {}
+        for rnd in range(args.rounds):
+            console.print(f"  第 {rnd + 1} 轮：温度 [cyan]{sensor.temp_c}°C[/cyan] 湿度 [cyan]{sensor.humi_pct}%[/cyan]")
+            frames.append(sensor._frame())
+            truths.setdefault("温度", sensor.temp_c)
+            truths.setdefault("湿度", sensor.humi_pct)
+            sensor.set_reading(sensor.temp_c + 1.7, sensor.humi_pct + 2.5)
+        source_desc = "demo-sensor"
+    else:
+        if not args.port:
+            err.print("[red]需要 --port 或 --demo-sensor[/red]")
+            return 1
+        truth_pairs = _parse_truths(args.truth or [])
+        if len(truth_pairs) < 1:
+            err.print("[red]至少标注一个真值：--truth \"温度=25.3\"（采样时设备的实际读数）[/red]")
+            return 1
+        factory = _real_factory(args.port)
+        frames = []
+        console.print(f"[dim]从 {args.port} @ {args.baud} 采 {args.rounds} 帧…[/dim]")
+        with factory(args.baud) as src:
+            for i in range(args.rounds):
+                if i > 0 and args.gap:
+                    console.print(f"  第 {i + 1} 轮前请改变设备读数（等待 {args.gap}s）…")
+                    import time as _t
+
+                    _t.sleep(args.gap)
+                frames.append(src.read(nbytes=args.sample, timeout=2.0))
+        truths = {k: v for k, v in truth_pairs.items()}
+        source_desc = args.port
+
+    profile, log = learn(frames, name=args.name, truths=truths)
+    profile.notes = f"数据源: {source_desc}; 真值标注: {truths or '无'}"
+
+    console.print(Panel("\n".join(log), title=f"学习日志 · {args.name}", border_style="cyan"))
+    path = profile.save()
+    console.print(f"\n[green]画像已保存：[/green]{path}")
+
+    # 用画像解码首帧做验证展示
+    if profile.fields:
+        decoded = profile.decode_frame(frames[0])
+        table = Table(title="画像解码验证（首帧）")
+        table.add_column("字段")
+        table.add_column("值", justify="right")
+        for k, v in decoded.items():
+            table.add_row(str(k), str(v))
+        console.print(table)
+    return 0
+
+
+def _parse_truths(items: list[str]) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for item in items:
+        if "=" not in item:
+            continue
+        k, v = item.split("=", 1)
+        try:
+            out[k.strip()] = float(v)
+        except ValueError:
+            continue
+    return out
 
 
 # ---------------------------------------------------------------- shared
@@ -213,10 +298,22 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--sample", type=int, default=96)
     p.set_defaults(fn=cmd_detect)
 
+    p = sub.add_parser("learn", help="协议学习：多帧采样 -> 字段推断 -> 保存画像")
+    p.add_argument("--port", default=None, help="串口号（与 --demo-sensor 二选一）")
+    p.add_argument("--demo-sensor", action="store_true", help="用内置虚拟温湿度传感器演示")
+    p.add_argument("-b", "--baud", default="115200", choices=BAUD_CHOICES)
+    p.add_argument("--rounds", type=int, default=5, help="采样轮数（>=3 效果好）")
+    p.add_argument("--sample", type=int, default=256)
+    p.add_argument("--gap", type=float, default=5.0, help="真实设备：两轮采样间隔秒数（用来改变读数）")
+    p.add_argument("--truth", action="append", default=[], help='真值标注，如 --truth "温度=25.3" 可多次')
+    p.add_argument("--name", default="my-device", help="画像保存名")
+    p.set_defaults(fn=cmd_learn)
+
     p = sub.add_parser("watch", help="实时监视串口")
     p.add_argument("port")
     p.add_argument("-b", "--baud", default="115200", choices=BAUD_CHOICES)
     p.add_argument("--chunk", type=int, default=64)
+    p.add_argument("--profile", default=None, help="加载协议画像实时解码（learn 的产物名）")
     p.set_defaults(fn=cmd_watch)
 
     p = sub.add_parser("analyze", help="采样 + 启发式 + AI 分析 -> Markdown 报告")

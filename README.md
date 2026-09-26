@@ -55,6 +55,36 @@ seriallens watch COM3 -b 115200        # 实时监视（HEX/文本双视图）
 seriallens analyze COM3 -b 9600 --ai   # 采样 + AI 分析 -> Markdown 报告
 ```
 
+## 协议学习模式（v0.2 新增）
+
+SerialLens 的招牌功能：对着不明设备抓几帧、标注一两个你已知的真值，
+它自动推断出**帧头、长度规则、字段偏移/类型/字节序/比例尺**，生成可复用的解码画像。
+
+```bash
+# 无硬件演示：内置虚拟温湿度传感器，多轮采样自动改变读数
+seriallens learn --demo-sensor --rounds 5 --name my-sensor
+
+# 真实设备：每轮采样前改变读数（如按一下按键、对着温度传感器哈口气）
+seriallens learn COM3 -b 9600 --rounds 5 --gap 5 \
+    --truth "温度=25.3" --truth "湿度=60" --name my-sensor
+
+# 之后用画像实时解码——乱码从此变成物理量
+seriallens watch COM3 -b 9600 --profile my-sensor
+# ● 温度=26.1  湿度=58.0
+# ● 温度=26.2  湿度=58.2
+```
+
+画像保存在 `~/.seriallens/profiles/<名字>.json`，是**可纠正的假设**：
+每个字段带置信度与标注来源，推断不对直接改 JSON 重用。
+
+工作原理（纯算法，离线可复现）：
+
+1. **帧切分**：行式 / 帧头发现（等间距重复前缀）/ 定长
+2. **逐字节对齐**：多帧对比，恒定字节 = 帧头/ID/填充，变化字节 = 候选字段
+3. **真值绑定**：遍历 (类型 × 字节序 × 比例尺) 组合，精确匹配你标注的真值
+4. **覆盖推断**：量程窄导致部分字节恰好恒定时，二次滑动窗口补绑
+5. 绑定不上的动态字节标「动态-未知」，不编造语义 —— 交给 AI 或人工确认
+
 ## 配置 AI 分析
 
 任何 OpenAI 兼容接口都可以（DeepSeek / GLM / OpenRouter / 本地 vLLM …），
@@ -79,8 +109,8 @@ key 只从环境变量读取，不落盘、不进日志：
 ## 路线图
 
 - [x] v0.1 串口收发 / 自动波特率 / 启发式识别 / AI 分析 / Markdown 报告
-- [ ] v0.2 协议学习模式：多轮采样对比，自动推断字段含义并生成解码模板
-- [ ] v0.2 agent skill / MCP server：串口数据直接进 Claude Code / ZCode 分析
+- [x] v0.2 协议学习模式：多轮采样对比，自动推断字段含义并生成解码画像
+- [ ] v0.2.x agent skill / MCP server：串口数据直接进 Claude Code / ZCode 分析
 - [ ] v0.3 TUI 实时解码视图、Modbus RTU 请求-响应配对、脚本收发（AT 交互）
 
 ## 适合谁

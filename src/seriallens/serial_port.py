@@ -7,6 +7,7 @@ demo 源存在的原因：GitHub 上没插硬件的人也应该能 30 秒体验�
 from __future__ import annotations
 
 import random
+import struct
 import time
 from typing import Iterator
 
@@ -158,3 +159,44 @@ def iter_demo(mode: str = "nmea", interval: float = 1.0) -> Iterator[bytes]:
             time.sleep(interval)
     finally:
         src.close()
+
+
+# ------------------------------------------------------ 虚拟温度传感器（学习模式靶子）
+
+def _crc8(data: bytes) -> int:
+    crc = 0
+    for b in data:
+        crc ^= b
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x07) & 0xFF if crc & 0x80 else (crc << 1) & 0xFF
+    return crc
+
+
+class TempSensorSource(DataSource):
+    """虚拟温湿度传感器：AA 55 | len | temp u16le(×0.01°C) | humi u16be(×0.1%) | seq u8 | crc8.
+
+    学习模式的标准靶子：帧头/长度/小端温度/大端湿度/递增序号/校验，五脏俱全。
+    temp_c / humi_pct 可在多轮采样间用 set_reading() 改变，模拟真实环境变化。
+    """
+
+    def __init__(self, temp_c: float = 25.3, humi_pct: float = 60.0, seq: int = 0):
+        self.temp_c = temp_c
+        self.humi_pct = humi_pct
+        self.seq = seq
+
+    def set_reading(self, temp_c: float, humi_pct: float) -> None:
+        self.temp_c = temp_c
+        self.humi_pct = humi_pct
+
+    def read(self, nbytes: int = 64, timeout: float = 0.5) -> bytes:
+        return self._frame()
+
+    def _frame(self) -> bytes:
+        payload = struct.pack("<H", int(self.temp_c * 100)) + struct.pack(">H", int(self.humi_pct * 10))
+        body = bytes([len(payload)]) + payload + bytes([self.seq & 0xFF])
+        frame = b"\xAA\x55" + body + bytes([_crc8(body)])
+        self.seq += 1
+        return frame
+
+    def write(self, data: bytes) -> int:
+        return len(data)
