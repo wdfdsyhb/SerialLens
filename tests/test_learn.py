@@ -129,7 +129,8 @@ class TestRawBlockLearning:
 
     def test_modal_length_filter_ignores_leading_partial_frame(self):
         """等长过滤以众数长度为基准：首帧是残帧时不应全军覆没（旧实现按首帧过滤）."""
-        good = [TempSensorSource()._frame() for _ in range(3)]
+        sensor = TempSensorSource()  # 同一传感器：seq 递增，帧间有动态字节
+        good = [sensor._frame() for _ in range(3)]
         partial = good[0][:4]
         profile, _log = learn([partial] + good, name="modal", truths={})
         assert profile.fields
@@ -164,10 +165,12 @@ class TestLengthRule:
         total, buf = 0, bytearray()
         for i in range(0, len(stream), 64):
             buf.extend(stream[i : i + 64])
-            results, tail = profile.split_stream(bytes(buf))
+            got, tail = profile.split_stream(bytes(buf))
             buf = bytearray(tail)
-            assert all(abs(r["温度"] - 26.0) < 0.01 for r in results)
-            total += len(results)
+            for frame in got:
+                values = profile.decode_frame(frame)
+                assert abs(values["温度"] - 26.0) < 0.01
+            total += len(got)
         assert total == 50
         assert not buf  # 全部消费完，无残留
 
