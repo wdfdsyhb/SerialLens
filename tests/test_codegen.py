@@ -115,7 +115,8 @@ class TestRealCompilation:
             'exit /b %errorlevel%\r\n',
             encoding="ascii",
         )
-        r = subprocess.run(["cmd", "/c", str(probe_bat)], capture_output=True, text=True, timeout=180)
+        r = subprocess.run(["cmd", "/c", str(probe_bat)], capture_output=True, timeout=180,
+                           encoding="utf-8", errors="replace")
         if r.returncode != 0:
             pytest.skip(f"本机 MSVC 工具链不可用（returncode={r.returncode}），跳过编译验证")
         obj = next(d.glob("*.obj"), None)

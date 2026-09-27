@@ -75,8 +75,10 @@ class TestToolFunctions:
         assert "mcp-loop" in names
 
     def test_server_info(self):
+        import seriallens
+
         out = json.loads(_tool_fn("serial__server_info")())
-        assert out["version"] == "0.3.0"
+        assert out["version"] == seriallens.__version__
 
 
 class TestRegistrySmoke:
