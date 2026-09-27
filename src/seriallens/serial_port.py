@@ -192,7 +192,8 @@ class TempSensorSource(DataSource):
         return self._frame()
 
     def _frame(self) -> bytes:
-        payload = struct.pack("<H", int(self.temp_c * 100)) + struct.pack(">H", int(self.humi_pct * 10))
+        # round() 而非 int()：int 截断会让 8.2*100=819.99... 变成 819（差 0.01）
+        payload = struct.pack("<H", round(self.temp_c * 100)) + struct.pack(">H", round(self.humi_pct * 10))
         body = bytes([len(payload)]) + payload + bytes([self.seq & 0xFF])
         frame = b"\xAA\x55" + body + bytes([_crc8(body)])
         self.seq += 1

@@ -112,33 +112,50 @@ class ProtocolProfile:
     # ------------------------------------------------ 解码
 
     def split_frames(self, data: bytes) -> list[bytes]:
-        """按画像帧结构把流切成帧（尽力而为，返回完整帧列表）."""
-        frames: list[bytes] = []
+        """按画像帧结构把流切成帧（一次性全量切分，尾部残帧丢弃）."""
+        frames, _tail = self.split_stream(data)
+        return frames
+
+    def split_stream(self, data: bytes) -> tuple[list[bytes], bytes]:
+        """流式切帧：返回 (完整帧列表, 未消费尾部).
+
+        尾部是可能是半帧的字节（帧被读取边界截断），调用方应把它拼接到
+        下一块数据开头再切，跨块边界才不丢帧。
+        """
         if self.framing_mode == "header" and self.header:
             head = bytes.fromhex(self.header)
+            frames: list[bytes] = []
             idx = 0
             while True:
                 pos = data.find(head, idx)
                 if pos == -1:
-                    break
+                    # 没有更多帧头：只有末尾 len(head)-1 字节可能是跨块撕裂的帧头，其余是垃圾
+                    rest = data[idx:]
+                    keep = max(len(head) - 1, 0)
+                    return frames, rest[-keep:] if keep else b""
                 frame_len = self._frame_len(data, pos)
-                if frame_len and pos + frame_len <= len(data):
+                if frame_len and frame_len > 0 and pos + frame_len <= len(data):
                     frames.append(data[pos : pos + frame_len])
                     idx = pos + frame_len
                 else:
-                    break
-            return frames
+                    # 帧不完整（或长度规则异常）：从该帧头起的字节都留给下一轮
+                    return frames, data[pos:]
         if self.framing_mode == "line":
-            for ln in data.replace(b"\r\n", b"\n").split(b"\n"):
-                if ln.strip():
-                    frames.append(ln)
-            return frames
+            parts = data.replace(b"\r\n", b"\n").split(b"\n")
+            if data.endswith(b"\n"):
+                return [ln for ln in parts if ln.strip()], b""
+            # 结尾没有行尾 => 最后一行可能是半行，结转到下一块
+            return [ln for ln in parts[:-1] if ln.strip()], parts[-1]
         # fixed:N
         try:
             n = int(self.length_rule.split(":")[1])
         except (IndexError, ValueError):
-            return []
-        return [data[i : i + n] for i in range(0, len(data) - n + 1, n)]
+            return [], b""
+        if n <= 0:
+            return [], b""
+        complete = len(data) // n
+        frames = [data[i * n : (i + 1) * n] for i in range(complete)]
+        return frames, data[complete * n :]
 
     def _frame_len(self, data: bytes, pos: int) -> int | None:
         rule = self.length_rule

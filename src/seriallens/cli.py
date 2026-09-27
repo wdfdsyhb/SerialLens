@@ -68,7 +68,7 @@ def cmd_demo(args: argparse.Namespace) -> int:
     console.print(Panel(result.summary(), title="本地启发式识别", border_style="cyan"))
 
     if args.detect:
-        scores = detect_baudrate(factory, nbytes=args.sample)
+        scores = detect_baudrate(demo_factory(mode), nbytes=args.sample)
         table = Table(title="波特率试错扫描（demo）")
         table.add_column("波特率", style="cyan")
         table.add_column("可读性分", justify="right")
@@ -121,11 +121,16 @@ def cmd_watch(args: argparse.Namespace) -> int:
     console.print(f"[dim]监视 {args.port} @ {args.baud}，Ctrl+C 停止[/dim]")
     try:
         with factory(args.baud) as src:
+            buf = bytearray()  # 跨块缓冲：帧可能被读取边界截断，残留字节结转到下一轮
             while True:
                 data = src.read(nbytes=args.chunk, timeout=0.5)
                 if data:
+                    buf.extend(data)
                     if profile:
-                        for values in profile.decode_stream(data):
+                        frames, tail = profile.split_stream(bytes(buf))
+                        buf = bytearray(tail)
+                        for frame in frames:
+                            values = profile.decode_frame(frame)
                             pretty = "  ".join(f"[cyan]{k}[/cyan]={v}" for k, v in values.items())
                             console.print(f"[green]●[/green] {pretty}")
                     else:
@@ -164,11 +169,11 @@ def cmd_learn(args: argparse.Namespace) -> int:
     if args.demo_sensor:
         console.print("[dim]学习靶场：虚拟温湿度传感器（AA55 帧）多轮采样，每轮改变真值[/dim]")
         sensor = TempSensorSource(temp_c=25.3, humi_pct=60.0)
-        frames: list[bytes] = []
+        samples: list[bytes] = []
         truths: dict[str, float] = {}
         for rnd in range(args.rounds):
             console.print(f"  第 {rnd + 1} 轮：温度 [cyan]{sensor.temp_c}°C[/cyan] 湿度 [cyan]{sensor.humi_pct}%[/cyan]")
-            frames.append(sensor._frame())
+            samples.append(sensor._frame())
             truths.setdefault("温度", sensor.temp_c)
             truths.setdefault("湿度", sensor.humi_pct)
             sensor.set_reading(sensor.temp_c + 1.7, sensor.humi_pct + 2.5)
@@ -182,8 +187,8 @@ def cmd_learn(args: argparse.Namespace) -> int:
             err.print("[red]至少标注一个真值：--truth \"温度=25.3\"（采样时设备的实际读数）[/red]")
             return 1
         factory = _real_factory(args.port)
-        frames = []
-        console.print(f"[dim]从 {args.port} @ {args.baud} 采 {args.rounds} 帧…[/dim]")
+        samples = []
+        console.print(f"[dim]从 {args.port} @ {args.baud} 采 {args.rounds} 轮（每轮 {args.sample} 字节）…[/dim]")
         with factory(args.baud) as src:
             for i in range(args.rounds):
                 if i > 0 and args.gap:
@@ -191,20 +196,27 @@ def cmd_learn(args: argparse.Namespace) -> int:
                     import time as _t
 
                     _t.sleep(args.gap)
-                frames.append(src.read(nbytes=args.sample, timeout=2.0))
+                chunk = src.read(nbytes=args.sample, timeout=2.0)
+                if chunk:
+                    samples.append(chunk)  # 连续流的原始字节块，learn() 内部负责切帧
+                else:
+                    err.print(f"[yellow]  第 {i + 1} 轮没有收到数据（设备可能没在发）。[/yellow]")
         truths = {k: v for k, v in truth_pairs.items()}
         source_desc = args.port
 
-    profile, log = learn(frames, name=args.name, truths=truths)
+    profile, log = learn(samples, name=args.name, truths=truths)
     profile.notes = f"数据源: {source_desc}; 真值标注: {truths or '无'}"
 
     console.print(Panel("\n".join(log), title=f"学习日志 · {args.name}", border_style="cyan"))
     path = profile.save()
     console.print(f"\n[green]画像已保存：[/green]{path}")
 
-    # 用画像解码首帧做验证展示
-    if profile.fields:
-        decoded = profile.decode_frame(frames[0])
+    # 用画像解码首个真实帧做验证展示（真实设备路径 samples[0] 是原始采样块，
+    # 先用画像自身切帧取第一帧，顺带验证画像的切帧规则可用）
+    if profile.fields and samples:
+        split = profile.split_frames(samples[0])
+        verify_frame = split[0] if split else samples[0]
+        decoded = profile.decode_frame(verify_frame)
         table = Table(title="画像解码验证（首帧）")
         table.add_column("字段")
         table.add_column("值", justify="right")
@@ -225,6 +237,16 @@ def _parse_truths(items: list[str]) -> dict[str, float]:
         except ValueError:
             continue
     return out
+
+
+# ---------------------------------------------------------------- mcp
+
+def cmd_mcp(args: argparse.Namespace) -> int:
+    """以 stdio 传输启动 MCP server（供 ZCode / Claude Desktop 等客户端拉起）."""
+    from .mcp_server import run as run_mcp
+
+    run_mcp()
+    return 0
 
 
 # ---------------------------------------------------------------- shared
@@ -279,6 +301,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ap.add_argument("--version", action="version", version=f"seriallens {__version__}")
     sub = ap.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("mcp", help="以 stdio MCP server 运行（供 ZCode / Claude Desktop 等接入）")
+    p.set_defaults(fn=cmd_mcp)
 
     p = sub.add_parser("ports", help="列出系统串口")
     p.set_defaults(fn=cmd_ports)

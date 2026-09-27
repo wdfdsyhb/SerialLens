@@ -35,7 +35,11 @@ def split_frames(data: bytes) -> tuple[list[bytes], str, str, str]:
     c) 否则 fixed（按间距最大公约数切）
     """
     ratio = _printable(data)
-    lines = [ln for ln in data.replace(b"\r\n", b"\n").split(b"\n") if ln.strip()]
+    parts = data.replace(b"\r\n", b"\n").split(b"\n")
+    # 结尾没有行尾 => 最后一行大概率被截断（读到一半），不作为帧
+    if not data.endswith((b"\n", b"\r\n")) and len(parts) > 1:
+        parts = parts[:-1]
+    lines = [ln for ln in parts if ln.strip()]
     if ratio > 0.85 and len(lines) >= 2:
         return lines, "line", "", ""
 
@@ -48,10 +52,10 @@ def split_frames(data: bytes) -> tuple[list[bytes], str, str, str]:
         if len(positions) < 2:
             continue
         gaps = {positions[i + 1] - positions[i] for i in range(len(positions) - 1)}
-        frames = [data[p : p + g] for p, g in zip(positions, sorted(gaps))] if len(gaps) == 1 else []
         if len(gaps) == 1:
             gap = gaps.pop()
-            frames = [data[p : p + gap] for p in positions]
+            # 只收完整帧：末尾不足一个间距的是被截断的残帧，丢弃
+            frames = [data[p : p + gap] for p in positions if p + gap <= len(data)]
             mode, rule = _infer_length_rule(data, positions, head, gap)
             return frames, mode, head.hex().upper(), rule
 
@@ -77,17 +81,28 @@ def _find_all(data: bytes, sub: bytes) -> list[int]:
 
 def _discover_header(data: bytes, head_len: int) -> bytes | None:
     """发现帧头：出现 >=2 次且等间距的首选前缀。按出现次数排序取最常见."""
+    cands = _header_candidates(data, head_len)
+    return cands[0] if cands else None
+
+
+def _header_candidates(data: bytes, head_len: int) -> list[bytes]:
+    """枚举所有「出现 >=2 次且等间距」的候选帧头，按采样出现次数降序.
+
+    连续流里固定偏移的窗口都会等间距重复（真帧头和部分负载窗口从单块内看
+    是同构的），所以调用方需要跨块交叉验证 + 恒定前缀打分来定夺。
+    """
     if len(data) < head_len * 2:
-        return None
+        return []
     counter = Counter(data[i : i + head_len] for i in range(0, len(data) - head_len, max(head_len, 4)))
     # 采样步进避免把随机内容当帧头；真实帧头会以稳定步长重复出现
+    out: list[bytes] = []
     for cand, _n in counter.most_common(8):
         positions = _find_all(data, cand)
         if len(positions) >= 2:
             gaps = {positions[i + 1] - positions[i] for i in range(len(positions) - 1)}
             if len(gaps) == 1 and next(iter(gaps)) >= head_len + 1:
-                return cand
-    return None
+                out.append(cand)
+    return out
 
 
 def _infer_length_rule(data: bytes, positions: list[int], head: bytes, gap: int) -> tuple[str, str]:
@@ -159,21 +174,34 @@ def bind_truth(raw_chunks: list[bytes], truth: float) -> tuple[str, float, float
     """尝试 (类型, scale) 组合，返回 (类型, scale, 置信度) 或 None.
 
     raw_chunks: 该字段在各帧的原始字节。每个候选类型用 struct 按自身端序解码
-    （真实设备就是这么编的），首帧解码值 * scale ≈ truth 即命中。
+    （真实设备就是这么编的）。命中要同时满足两条，避免只看首帧的巧合误绑：
+    1. 首帧解码值 * scale ≈ truth（首帧对应真值标注时刻的读数）
+    2. 全帧解码一致性：所有帧的解码值都落在真值同一量级的合理带内
+       ——真实传感器的相邻采样会变但不会跳量级；错位/巧合解释会炸出野值
     """
+    if not raw_chunks:
+        return None
     widths = (4, 2, 1) if len(raw_chunks[0]) >= 4 else ((2, 1) if len(raw_chunks[0]) >= 2 else (1,))
     for width in widths:
         for ftype in _candidates_for_width(width):
             try:
-                first = _decode(raw_chunks[0], ftype)
+                values = [_decode(chunk, ftype) for chunk in raw_chunks]
             except struct.error:
                 continue
             for scale in TRUTH_SCALES:
-                if first * scale == 0:
+                if values[0] * scale == 0:
                     continue
-                if abs(first * scale - truth) <= TRUTH_TOLERANCE * max(abs(truth), 1e-9):
+                if abs(values[0] * scale - truth) <= TRUTH_TOLERANCE * max(abs(truth), 1e-9) and all(
+                    _in_plausible_band(v * scale, truth) for v in values
+                ):
                     return ftype, scale, 0.95
     return None
+
+
+def _in_plausible_band(value: float, truth: float) -> bool:
+    """物理合理性带（诚实启发式）：后续读数允许变化，但不跳出一阶量级."""
+    limit = max(20.0 * abs(truth), 10.0)
+    return abs(value - truth) <= limit
 
 
 def _decode(raw: bytes, ftype: str) -> float:
@@ -184,49 +212,158 @@ def _decode(raw: bytes, ftype: str) -> float:
 
 # ---------------------------------------------------------------- 主入口
 
+def _pool_frames(blocks: list[bytes], log: list[str]) -> tuple[list[bytes], str]:
+    """把输入整理成候选帧池，返回 (帧列表, framing_mode).
+
+    输入有两种形态，先判别再处理：
+    - 已是单帧列表（demo 传感器路径 / 既有调用方式）-> 原样保留
+    - 每轮一大块连续采样的原始字节块（CLI 真实设备路径 read 到的整块）
+      -> 必须先切帧；直接把块当帧会逐字节错位，产出高置信度错误画像
+
+    判别：任一块能独立切出 >=2 帧即视为原始块。二进制连续流用「跨块帧头
+    投票 + 恒定前缀打分」统一切帧基准：单块内固定偏移的负载窗口和真帧头
+    同构（都等间距重复），只有跨块比较（真值随轮次变化 vs 帧头恒定）
+    才能分辨，并保证所有块按同一旋转对齐。
+    """
+    if not blocks:
+        return [], "header"
+    probes: list[tuple[list[bytes], str]] = []
+    looks_raw = False
+    for b in blocks:
+        fs, mode, _header, _rule = split_frames(b)
+        probes.append((fs, mode))
+        if len(fs) >= 2:
+            looks_raw = True
+    if not looks_raw:
+        return list(blocks), "header"
+
+    if any(mode == "line" for _fs, mode in probes):
+        frames = [f for fs, _mode in probes for f in fs]
+        log.append(f"输入为连续文本采样块：已按行切分，共 {len(frames)} 行。")
+        return frames, "line"
+
+    # 二进制连续流：收集各块的候选帧头，用同一帧头切所有块再打分
+    cand_set: dict[bytes, None] = {}
+    for b in blocks:
+        for head_len in (2, 1, 3):
+            for cand in _header_candidates(b, head_len):
+                cand_set.setdefault(cand, None)
+    best: tuple[tuple[int, int], bytes, list[bytes]] | None = None
+    for head in cand_set:
+        pool, nblocks = _cut_blocks_with_header(blocks, head)
+        if nblocks < 2 or len(pool) < 2:
+            continue
+        score = (_constant_prefix_len(pool), len(pool))
+        if best is None or score > best[0]:
+            best = (score, head, pool)
+    if best is None:
+        frames = [f for fs, _mode in probes for f in fs]
+        log.append("未能跨块确定一致帧头：退回按块独立切帧（建议增加采样轮数）。")
+        return frames, "header"
+    _score, head, pool = best
+    log.append(
+        f"输入为连续采样块：已自动切帧（帧头 {head.hex().upper()}，"
+        f"等长过滤前共 {len(pool)} 个候选帧）。"
+    )
+    return pool, "header"
+
+
+def _cut_blocks_with_header(blocks: list[bytes], head: bytes) -> tuple[list[bytes], int]:
+    """用同一帧头切所有块。要求各块内等间距且间距一致（同一协议才成立）.
+
+    返回 (完整帧池, 参与切帧的块数)。块尾不足一个间距的残帧丢弃。
+    """
+    pool: list[bytes] = []
+    gap: int | None = None
+    used = 0
+    for b in blocks:
+        positions = _find_all(b, head)
+        if len(positions) < 2:
+            continue
+        gaps = {positions[i + 1] - positions[i] for i in range(len(positions) - 1)}
+        if len(gaps) != 1:
+            continue
+        g = gaps.pop()
+        if g < len(head) + 1:
+            continue
+        if gap is None:
+            gap = g
+        elif g != gap:
+            continue
+        used += 1
+        pool.extend(b[p : p + g] for p in positions if p + g <= len(b))
+    return pool, used
+
+
+def _constant_prefix_len(frames: list[bytes]) -> int:
+    """池化对齐后的恒定前缀长度：真帧头随轮次恒定，负载窗口会变."""
+    if not frames:
+        return 0
+    width = min(len(f) for f in frames)
+    n = 0
+    for i in range(width):
+        if len({f[i] for f in frames}) != 1:
+            break
+        n += 1
+    return n
+
+
+def _filter_modal_length(frames: list[bytes]) -> list[bytes]:
+    """等长过滤以众数长度为基准：首帧若是残帧，按首帧过滤会全军覆没."""
+    if not frames:
+        return []
+    modal = Counter(len(f) for f in frames).most_common(1)[0][0]
+    return [f for f in frames if len(f) == modal]
+
+
 def learn(
     frames: list[bytes],
     name: str = "learned",
     truths: dict[str, float] | None = None,
 ) -> tuple[ProtocolProfile, list[str]]:
-    """从等长帧列表学习协议画像.
+    """从帧列表或原始采样块学习协议画像.
 
-    truths: {语义名: 物理真值}（用户在采样时标注，如 {"温度": 25.3}）。
-    返回 (画像, 学习日志)。帧数 <2 时动态字段无从谈起，日志里明说。
+    frames: 每个元素可以是「一帧」，也可以是「一段连续采样的原始字节块」
+    （CLI 真实设备路径每轮 read 到的整块）。后者先自动切帧成候选帧池
+    （见 _pool_frames），再做等长过滤、结构推断与真值绑定。
+
+    truths: {语义名: 物理真值}（用户在采样时标注，如 {"温度": 25.3}，
+    对应第一轮采样时刻的读数，即池中第一帧）。帧数 <2 时动态字段无从
+    谈起，日志里明说。返回 (画像, 学习日志)。
     """
     truths = truths or {}
     log: list[str] = []
-    frames = [f for f in frames if f]
+    pooled, framing_mode = _pool_frames([f for f in frames if f], log)
+    frames = _filter_modal_length(pooled)
     if len(frames) < 2:
         log.append("有效帧不足 2 帧，只能做静态分析，动态字段推断需要更多帧。")
-    frames = [f for f in frames if len(f) == len(frames[0])]
 
     stats = align(frames)
     width = len(frames[0]) if frames else 0
     log.append(f"对齐 {len(frames)} 帧 × {width} 字节。")
 
-    profile = ProtocolProfile(name=name, framing_mode="header")
+    profile = ProtocolProfile(name=name, framing_mode=framing_mode)
     dynamic_runs = cluster_dynamic(stats)
 
     # 静态前缀 -> 帧头；若前缀里有「值 + K == 帧长」的字节，它更像长度字节，留在规则里
-    static_head = 0
-    while static_head < width and stats[static_head].constant:
-        static_head += 1
-    profile.header = frames[0][:static_head].hex().upper() if static_head >= 2 else ""
-    for n in range(2, static_head):
-        v = frames[0][n]
-        if 0 < v < width and v + 2 + (width - v - 2) == width and width - v >= 2:
-            # 帧长 = v + (帧头2字节 + 长度字节1 + 尾部K) -> 生成 byte@N+K 规则
-            profile.header = frames[0][:n].hex().upper()
-            profile.length_rule = f"byte@{n}+{width - v}"
-            log.append(f"偏移 {n} 恒定字节 {v:#04x} 与帧长 {width} 构成 byte@{n}+{width - v} 长度规则 -> 归为长度字节。")
-            break
-    if profile.header:
-        log.append(f"帧头 {profile.header}（前 {len(bytes.fromhex(profile.header))} 字节恒定）。")
-
-    # 定长规则
-    if frames and len(set(len(f) for f in frames)) == 1:
-        profile.length_rule = f"fixed:{width}"
+    if framing_mode == "header" and frames:
+        static_head = 0
+        while static_head < width and stats[static_head].constant:
+            static_head += 1
+        profile.header = frames[0][:static_head].hex().upper() if static_head >= 2 else ""
+        for n in range(2, static_head):
+            v = frames[0][n]
+            if 0 < v < width and width - v >= 2:
+                # 帧长 = v + (帧头2字节 + 长度字节1 + 尾部K) -> 生成 byte@N+K 规则
+                profile.header = frames[0][:n].hex().upper()
+                profile.length_rule = f"byte@{n}+{width - v}"
+                log.append(f"偏移 {n} 恒定字节 {v:#04x} 与帧长 {width} 构成 byte@{n}+{width - v} 长度规则 -> 归为长度字节。")
+                break
+        if not profile.length_rule:
+            # 没推导出更具体的 byte@N+K 规则时才回落定长，不覆盖已有规则
+            profile.length_rule = f"fixed:{width}"
+        if profile.header:
+            log.append(f"帧头 {profile.header}（前 {len(bytes.fromhex(profile.header))} 字节恒定）。")
 
     # 动态区 -> 字段，尝试真值绑定
     used_truths: set[str] = set()

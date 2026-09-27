@@ -114,6 +114,48 @@ seriallens watch COM3 -b 9600 --profile my-sensor
 > 注：单次实验、单一模型、教学向帧格式，不构成严格基准。欢迎用你自己的设备复现并在
 > [Discussions](https://github.com/wdfdsyhb/SerialLens/discussions) 分享对照结果。
 
+## MCP server：把串口能力接进 AI Agent（v0.3 新增）
+
+`seriallens mcp` 以 stdio 运行 MCP server，让 ZCode、Claude Desktop、Cursor 等
+任何 MCP 客户端直接获得串口侦探能力。全部工具无硬件可用（内置虚拟传感器靶场）：
+
+| 工具 | 作用 |
+| --- | --- |
+| `serial__ports` | 列出系统串口 |
+| `serial__demo_frames` | 生成虚拟传感器帧（学习模式靶场，布局对 agent 保密） |
+| `serial__analyze` | HEX 采样分析（启发式 + 可选 AI） |
+| `serial__detect_baud` | 真实串口波特率扫描 |
+| `serial__capture` | 真实串口采样（唯一有副作用的工具，只读） |
+| `serial__learn` | 多帧学习 → 协议画像（保存并返回解码验证） |
+| `serial__decode` | 用画像实时解码 HEX 流 |
+| `serial__profiles` / `serial__server_info` | 画像清单 / 版本信息 |
+
+**ZCode 配置**（`~/.zcode/cli/config.json` → `mcp.servers`）：
+
+```json
+"seriallens": {
+  "type": "stdio",
+  "command": "seriallens",
+  "args": ["mcp"]
+}
+```
+
+**Claude Desktop 配置**（`claude_desktop_config.json`）：
+
+```json
+{
+  "mcpServers": {
+    "seriallens": {
+      "command": "uvx",
+      "args": ["seriallens", "mcp"]
+    }
+  }
+}
+```
+
+接入后你可以直接对 agent 说：「用 serial__demo_frames 生成一段靶场数据，
+学习它的协议，然后告诉我温度字段在哪」——agent 全程自己调工具完成闭环。
+
 ## 配置 AI 分析
 
 任何 OpenAI 兼容接口都可以（DeepSeek / GLM / OpenRouter / 本地 vLLM …），
@@ -139,8 +181,9 @@ key 只从环境变量读取，不落盘、不进日志：
 
 - [x] v0.1 串口收发 / 自动波特率 / 启发式识别 / AI 分析 / Markdown 报告
 - [x] v0.2 协议学习模式：多轮采样对比，自动推断字段含义并生成解码画像
-- [ ] v0.2.x agent skill / MCP server：串口数据直接进 Claude Code / ZCode 分析
-- [ ] v0.3 TUI 实时解码视图、Modbus RTU 请求-响应配对、脚本收发（AT 交互）
+- [x] v0.3 MCP server：9 个工具接入 ZCode / Claude Desktop，无硬件全流程可用
+- [ ] v0.3.x agent skill 形态、文件回放（.bin/.log 捕获分析）
+- [ ] v0.4 协议画像 → C 解析器代码生成、TUI 实时解码视图、Modbus RTU 配对
 
 ## 适合谁
 
