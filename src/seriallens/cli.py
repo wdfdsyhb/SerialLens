@@ -249,6 +249,50 @@ def cmd_mcp(args: argparse.Namespace) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- replay
+
+def cmd_replay(args: argparse.Namespace) -> int:
+    """文件回放：分析现成的串口捕获文件（.bin / 纯 HEX / hexdump 文本）."""
+    from .replay import ReplayError, load_capture
+
+    try:
+        data, fmt = load_capture(args.file)
+    except ReplayError as exc:
+        err.print(f"[red]{exc}[/red]")
+        return 1
+    console.print(f"[dim]已加载 {args.file}（{fmt}，{len(data)} 字节）[/dim]\n")
+
+    result = detect(data)
+    console.print(Panel(result.summary(), title="本地启发式识别", border_style="cyan"))
+    return _finish_analysis(data, args.file, args.baud + "（回放）", result.summary(), args)
+
+
+# ---------------------------------------------------------------- export-c
+
+def cmd_export_c(args: argparse.Namespace) -> int:
+    """把协议画像生成嵌入式 C 解析器（自包含 .h/.c，零系统头依赖）."""
+    from .codegen import generate_c
+    from .profile import ProtocolProfile
+
+    try:
+        profile = ProtocolProfile.load(args.profile)
+    except FileNotFoundError:
+        err.print(f"[red]画像 {args.profile} 不存在。[/red]可用：{[p.stem for p in Path.home().glob('.seriallens/profiles/*.json')]}")
+        return 1
+
+    h_text, c_text = generate_c(profile)
+    out_dir = Path(args.out or ".")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    h_path = out_dir / f"{profile.name}_parser.h"
+    c_path = out_dir / f"{profile.name}_parser.c"
+    h_path.write_text(h_text, encoding="utf-8")
+    c_path.write_text(c_text, encoding="utf-8")
+    console.print(f"[green]已生成：[/green]{h_path}\n[green]        {c_path}[/green]")
+    console.print(f"[dim]帧头 {profile.header or '无'} / 长度 {profile.length_rule} / 字段 {len(profile.fields)} 个。"
+                  f"编译验证（任意编译器）：cc -c {c_path.name}[/dim]")
+    return 0
+
+
 # ---------------------------------------------------------------- shared
 
 def _real_factory(port: str):
@@ -304,6 +348,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("mcp", help="以 stdio MCP server 运行（供 ZCode / Claude Desktop 等接入）")
     p.set_defaults(fn=cmd_mcp)
+
+    p = sub.add_parser("replay", help="文件回放：分析现成的串口捕获文件（.bin / 纯 HEX / hexdump）")
+    p.add_argument("file", help="捕获文件路径")
+    p.add_argument("-b", "--baud", default="unknown", help="原波特率（仅用于报告标注）")
+    p.add_argument("--ai", action="store_true", help="调用 AI 分析（需 API key）")
+    p.add_argument("--out", default=None, help="报告输出路径")
+    p.add_argument("--title", default=None)
+    p.set_defaults(fn=cmd_replay)
+
+    p = sub.add_parser("export-c", help="协议画像 -> 嵌入式 C 解析器（自包含 .h/.c）")
+    p.add_argument("profile", help="画像名（learn 的产物）")
+    p.add_argument("--out", default=None, help="输出目录（默认当前目录）")
+    p.set_defaults(fn=cmd_export_c)
 
     p = sub.add_parser("ports", help="列出系统串口")
     p.set_defaults(fn=cmd_ports)

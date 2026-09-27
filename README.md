@@ -114,6 +114,37 @@ seriallens watch COM3 -b 9600 --profile my-sensor
 > 注：单次实验、单一模型、教学向帧格式，不构成严格基准。欢迎用你自己的设备复现并在
 > [Discussions](https://github.com/wdfdsyhb/SerialLens/discussions) 分享对照结果。
 
+## 文件回放与 C 代码生成（v0.4 新增）
+
+**文件回放**——手上没有设备，但有抓包？直接分析：
+
+```bash
+seriallens replay capture.bin               # 二进制捕获
+seriallens replay forum_dump.txt            # 论坛求助帖里的 hexdump（带偏移前缀+ASCII 尾注）
+seriallens replay log.hex --ai              # 纯 HEX 文本，附加 AI 分析
+```
+
+支持格式自动识别：二进制 / 纯 HEX（空格冒号换行分隔均可）/ hexdump 带偏移格式
+（兼容 `hexdump -C`、逻辑分析仪导出、SerialLens 自己的报告）。可读文本但不是
+HEX 会明确拒绝——不猜语义。
+
+**C 代码生成**——画像直接变嵌入式解析器：
+
+```bash
+seriallens export-c my-sensor --out firmware/
+# -> firmware/my-sensor_parser.h / .c
+```
+
+生成特点：
+- **零依赖自包含**：不 include 任何系统头（stdint 等价物内联 typedef），
+  裸机/RTOS/PC 任何编译器直接编
+- **流式状态机**：`feed()` 任意分块喂入，跨块帧不丢（尾部自动结转）
+- 端序按画像显式生成（u16le/u16be…），物理值 = 原始值 × scale
+- 非 ASCII 字段名自动转合法 C 标识符，中文语义名保留在注释
+- 诚实原则：不生成校验代码（画像未推断出校验算法），注释明说
+
+一条链路：**抓包 → learn → export-c → 编进固件**。
+
 ## MCP server：把串口能力接进 AI Agent（v0.3 新增）
 
 `seriallens mcp` 以 stdio 运行 MCP server，让 ZCode、Claude Desktop、Cursor 等
@@ -182,8 +213,9 @@ key 只从环境变量读取，不落盘、不进日志：
 - [x] v0.1 串口收发 / 自动波特率 / 启发式识别 / AI 分析 / Markdown 报告
 - [x] v0.2 协议学习模式：多轮采样对比，自动推断字段含义并生成解码画像
 - [x] v0.3 MCP server：9 个工具接入 ZCode / Claude Desktop，无硬件全流程可用
-- [ ] v0.3.x agent skill 形态、文件回放（.bin/.log 捕获分析）
-- [ ] v0.4 协议画像 → C 解析器代码生成、TUI 实时解码视图、Modbus RTU 配对
+- [x] v0.4 文件回放（.bin / HEX / hexdump）+ 协议画像 → C 解析器代码生成
+- [ ] v0.4.x agent skill 形态、Python 目标代码生成
+- [ ] v0.5 TUI 实时解码视图、Modbus RTU 配对、ESP32 无线串口网关
 
 ## 适合谁
 

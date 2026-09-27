@@ -93,11 +93,12 @@ def serial__demo_frames(count: int = 4, temp_c: float = 25.3, humi_pct: float = 
 
 
 @mcp.tool()
-def serial__analyze(hex_data: str = "", demo: bool = False) -> str:
+def serial__analyze(hex_data: str = "", demo: bool = False, file_path: str = "") -> str:
     """分析一份数据：内置启发式识别协议 + 可选 AI 深度分析。
 
     hex_data: 串口采样的 HEX 字符串（空格/冒号/换行均可，也可含 ASCII 前缀格式）。
-    demo=true 时忽略 hex_data，用内置虚拟传感器生成 4 帧演示数据。
+    file_path: 本机捕获文件路径（.bin 二进制 / 纯 HEX 文本 / hexdump 文本），与 hex_data 二选一。
+    demo=true 时用内置虚拟传感器生成 4 帧演示数据。
     返回：HEX/文本双视图 + 启发式结论 + 证据。AI 分析在配置了
     SERIALLENS_API_KEY（或 DEEPSEEK_API_KEY）时自动附加。
     """
@@ -106,12 +107,20 @@ def serial__analyze(hex_data: str = "", demo: bool = False) -> str:
         frames = [sensor._frame() for _ in range(4)]
         data = b"".join(frames)
         source_note = "demo（虚拟传感器，非真实设备）"
+    elif file_path:
+        from .replay import ReplayError, load_capture
+
+        try:
+            data, fmt = load_capture(file_path)
+        except ReplayError as exc:
+            return json.dumps({"error": f"回放文件加载失败：{exc}"}, ensure_ascii=False)
+        source_note = f"{file_path}（{fmt} 回放）"
     elif hex_data.strip():
         data = _hex_to_bytes(hex_data)
         source_note = "user-provided hex"
     else:
         return json.dumps(
-            {"error": "缺少数据：传入 hex_data，或 demo=true 使用虚拟传感器演示"},
+            {"error": "缺少数据：传入 hex_data / file_path，或 demo=true 使用虚拟传感器演示"},
             ensure_ascii=False,
         )
     if not data:
