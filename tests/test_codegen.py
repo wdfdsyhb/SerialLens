@@ -92,7 +92,7 @@ class TestGeneratedCode:
 
 
 class TestRealCompilation:
-    """探测到可工作的 MSVC（vcvars + cl）时做真实编译验证；否则 skip.
+    r"""探测到可工作的 MSVC（vcvars + cl）时做真实编译验证；否则 skip.
 
     注意：只检查 cl.exe 存在不够——非标准 VS 布局（如本机 D:\VS）的
     vcvars64 可能本身报错，因此做一次最小编译探针再决定。
