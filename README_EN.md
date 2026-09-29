@@ -36,4 +36,16 @@ The LLM's own conclusion: *"run a controlled experiment — change temperature a
 its bytes"* — which is exactly what `learn` automates. Precise data-field location comes from
 algorithms plus truth labels, not from guessing. See the Chinese README for the full write-up.
 
+## The Lens series
+
+SerialLens is part of the **Lens series** — one philosophy: face unknown hardware and
+protocols, report only evidence, never claim certainty.
+
+| Tool | Domain | Status |
+| --- | --- | --- |
+| **SerialLens** | Serial / UART protocol identification & decoding | ✅ available |
+| [modbus-lens](https://github.com/wdfdsyhb/modbus-lens) | Modbus RTU slave discovery & register recon | ✅ available |
+| can-lens | CAN bus traffic profiling | 🚧 planned |
+| ble-lens | BLE GATT service recon | 💡 idea |
+
 MIT License.
