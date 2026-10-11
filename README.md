@@ -35,7 +35,8 @@ SerialLens 把这些苦力活交给软件启发式 + 大模型：
 ## 快速开始
 
 ```bash
-pip install seriallens        # 发布后；开发版: pip install -e .
+pip install git+https://github.com/wdfdsyhb/SerialLens.git
+# 开发版: pip install -e .
 ```
 
 **没有硬件？30 秒体验：**
@@ -178,7 +179,7 @@ seriallens export-c my-sensor --out firmware/
   "mcpServers": {
     "seriallens": {
       "command": "uvx",
-      "args": ["seriallens", "mcp"]
+      "args": ["--from", "git+https://github.com/wdfdsyhb/SerialLens.git", "seriallens", "mcp"]
     }
   }
 }
