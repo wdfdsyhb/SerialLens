@@ -93,37 +93,45 @@ def test_stdio_handshake_and_safe_tools():
 
 
 def test_stdio_learn_decode_roundtrip():
-    """协议层闭环：demo_frames -> learn -> decode 经真实 stdio 完成."""
-    calls: list[dict] = [
+    """协议层闭环：demo_frames -> learn -> decode 经真实 stdio 完成.
+
+    顺序依赖的调用分三个会话发出：mcp 2.x 对同步工具用工作线程并发处理，
+    同一批请求不保证完成顺序——依赖调用必须等前一响应（与真实 MCP 客户端
+    的用法一致）。
+    """
+    init = [
         {"jsonrpc": "2.0", "id": 1, "method": "initialize",
          "params": {"protocolVersion": "2024-11-05", "capabilities": {},
                     "clientInfo": {"name": "pytest", "version": "0"}}},
         {"jsonrpc": "2.0", "method": "notifications/initialized"},
+    ]
+    responses, _junk = _probe(init + [
         {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
          "params": {"name": "serial__demo_frames", "arguments": {"count": 5}}},
-    ]
-    responses, _junk = _probe(calls)
+    ])
     demo = json.loads(responses[2]["result"]["content"][0]["text"])
     assert len(demo["frames_hex"]) == 5
 
-    # 第二个会话：learn + decode（同一进程内连续调用）
-    calls2 = calls[:2] + [
+    responses2, junk2 = _probe(init + [
         {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
          "params": {"name": "serial__learn", "arguments": {
              "frames_hex": demo["frames_hex"],
              "truths": {"温度": demo["first_reading"]["temp_c"],
                         "湿度": demo["first_reading"]["humi_pct"]},
              "name": "stdio-loop"}}},
-        {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
-         "params": {"name": "serial__decode", "arguments": {
-             "profile_name": "stdio-loop",
-             "hex_stream": "".join(demo["frames_hex"])}}},
-    ]
-    responses2, junk2 = _probe(calls2)
+    ])
     assert not junk2
     learned = json.loads(responses2[2]["result"]["content"][0]["text"])
     names = {f["name"] for f in learned["fields"]}
     assert {"温度", "湿度"}.issubset(names)
-    decoded = json.loads(responses2[3]["result"]["content"][0]["text"])
+
+    responses3, junk3 = _probe(init + [
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+         "params": {"name": "serial__decode", "arguments": {
+             "profile_name": "stdio-loop",
+             "hex_stream": "".join(demo["frames_hex"])}}},
+    ])
+    assert not junk3
+    decoded = json.loads(responses3[2]["result"]["content"][0]["text"])
     assert decoded["frames_found"] == 5
     assert abs(decoded["decoded"][0]["温度"] - demo["first_reading"]["temp_c"]) < 0.01
