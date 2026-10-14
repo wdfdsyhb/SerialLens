@@ -22,7 +22,7 @@ import json
 import time
 from pathlib import Path
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from . import __version__
 from .analyst import LLMConfig, analyze, build_prompt
@@ -33,7 +33,7 @@ from .profile import PROFILES_DIR, ProtocolProfile
 from .protocols import detect
 from .serial_port import RealSerial, TempSensorSource, list_ports
 
-mcp = FastMCP(
+mcp = MCPServer(
     "seriallens",
     instructions=(
         "SerialLens：AI 串口侦探。分析串口数据、自动波特率、学习协议字段、"
@@ -245,7 +245,7 @@ def serial__server_info() -> str:
 
 def run() -> None:
     """stdio 模式运行（供 seriallens mcp 子命令调用）。"""
-    mcp.run()
+    mcp.run(transport="stdio")
 
 
 if __name__ == "__main__":

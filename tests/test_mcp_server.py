@@ -1,18 +1,21 @@
-"""MCP server 单测：直接调用 FastMCP 注册的工具函数 + 注册表烟测.
+"""MCP server 单测：直接调用注册的工具函数 + 注册表烟测.
 
 说明：工具函数层闭环覆盖业务逻辑；stdio 子进程握手属 Windows 管道时序
 脆弱测试，以工具注册表完整性检查替代（真实握手由 MCP 客户端连接时验证）。
 """
 
+import asyncio
 import json
 
+from seriallens import mcp_server
 from seriallens.mcp_server import mcp
 
 
 def _tool_fn(name: str):
-    """FastMCP 把工具注册进 mcp._tool_manager；取原始函数做直接调用."""
-    tool = mcp._tool_manager._tools[name]
-    return tool.fn
+    """注册后的工具函数仍以原名绑定在模块命名空间；取函数本体直接调用."""
+    fn = getattr(mcp_server, name)
+    assert callable(fn), f"tool '{name}' is not callable on the module"
+    return fn
 
 
 class TestToolFunctions:
@@ -85,8 +88,9 @@ class TestRegistrySmoke:
     """注册表烟测：全部工具已注册、命名符合 mcp__serial__* 约定."""
 
     def test_all_tools_registered(self):
-        tools = mcp._tool_manager._tools
+        tools = asyncio.run(mcp.list_tools())
+        names = {t.name for t in tools}
         expected = {"serial__ports", "serial__demo_frames", "serial__analyze",
                     "serial__detect_baud", "serial__capture", "serial__learn",
                     "serial__decode", "serial__profiles", "serial__server_info"}
-        assert expected.issubset(set(tools))
+        assert expected.issubset(names)
