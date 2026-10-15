@@ -201,6 +201,111 @@
     chatEl.scrollTop = chatEl.scrollHeight;
   }
 
+  // ---------- 会话管理（localStorage 持久化） ----------
+  var sessionListEl = document.getElementById("sessionList");
+  var newChatBtn = document.getElementById("newChatBtn");
+  var sidebarEl = document.getElementById("sidebar");
+  var sidebarMask = document.getElementById("sidebarMask");
+  var menuBtn = document.getElementById("menuBtn");
+
+  var WELCOME_HTML = document.getElementById("welcome") ?
+    document.getElementById("welcome").innerHTML : "";
+
+  var sessions = [];
+  try { sessions = JSON.parse(localStorage.getItem("sl-sessions") || "[]") || []; } catch (e) { sessions = []; }
+  var currentId = null;
+
+  function saveSessions() {
+    try { localStorage.setItem("sl-sessions", JSON.stringify(sessions)); } catch (e) { /* 容量满忽略 */ }
+  }
+  function currentSession() {
+    for (var i = 0; i < sessions.length; i++) {
+      if (sessions[i].id === currentId) return sessions[i];
+    }
+    return null;
+  }
+  function ensureSession(firstText) {
+    var s = currentSession();
+    if (s) return s;
+    s = { id: "s" + Date.now(), title: (firstText || "新任务").slice(0, 20), created: new Date().toISOString(), messages: [] };
+    sessions.unshift(s);
+    currentId = s.id;
+    return s;
+  }
+  function appendMessage(role, text, result) {
+    var s = ensureSession(text || (result && result.title) || "新任务");
+    if (role === "user") { s.messages.push({ role: "user", text: text }); }
+    else { s.messages.push({ role: "bot", result: result }); }
+    saveSessions();
+    renderSessionList();
+  }
+  function renderSessionList() {
+    sessionListEl.innerHTML = "";
+    sessions.forEach(function (s) {
+      var item = document.createElement("div");
+      item.className = "session-item" + (s.id === currentId ? " active" : "");
+      var t = document.createElement("span");
+      t.className = "session-title";
+      t.textContent = s.title;
+      item.appendChild(t);
+      var del = document.createElement("button");
+      del.className = "session-del";
+      del.textContent = "×";
+      del.title = "删除会话";
+      del.onclick = function (e) {
+        e.stopPropagation();
+        sessions = sessions.filter(function (x) { return x.id !== s.id; });
+        if (currentId === s.id) { newSession(); }
+        saveSessions();
+        renderSessionList();
+      };
+      item.appendChild(del);
+      item.onclick = function () { openSession(s.id); closeDrawer(); };
+      sessionListEl.appendChild(item);
+    });
+  }
+  function clearChat() { chatEl.innerHTML = ""; }
+
+  function newSession() {
+    currentId = null;
+    clearChat();
+    var w = document.createElement("div");
+    w.className = "welcome";
+    w.id = "welcome";
+    w.innerHTML = WELCOME_HTML;
+    chatEl.appendChild(w);
+    renderSessionList();
+    inputEl.focus();
+  }
+
+  function openSession(id) {
+    var s = null;
+    for (var i = 0; i < sessions.length; i++) {
+      if (sessions[i].id === id) { s = sessions[i]; break; }
+    }
+    if (!s) return;
+    currentId = id;
+    clearChat();
+    s.messages.forEach(function (m) {
+      if (m.role === "user") { addUserMsg(m.text); }
+      else if (m.result) { addBotMsg(m.result); }
+    });
+    renderSessionList();
+    scrollBottom();
+  }
+
+  function closeDrawer() {
+    sidebarEl.classList.remove("open");
+    sidebarMask.classList.remove("show");
+  }
+  menuBtn.onclick = function () {
+    sidebarEl.classList.toggle("open");
+    sidebarMask.classList.toggle("show");
+  };
+  sidebarMask.onclick = closeDrawer;
+  newChatBtn.onclick = function () { newSession(); closeDrawer(); };
+  renderSessionList();
+
   // ---------- 交互 ----------
   function send(text) {
     if (busy || !text.trim()) return;
@@ -210,6 +315,7 @@
     if (welcome) welcome.remove();
 
     addUserMsg(text.trim());
+    appendMessage("user", text.trim());
     var typing = addTyping();
 
     fetch("/api/chat", {
@@ -221,6 +327,7 @@
       .then(function (result) {
         typing.remove();
         addBotMsg(result);
+        appendMessage("bot", null, result);
       })
       .catch(function () {
         typing.remove();

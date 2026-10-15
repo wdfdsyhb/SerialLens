@@ -23,12 +23,75 @@ body {
 
 .shell {
   width: 100%;
-  max-width: 860px;
+  max-width: 1080px;
   height: 100vh;
+  display: flex;
+  flex-direction: row;
+  background: var(--bg);
+}
+
+/* ---- 侧栏：任务列表 ---- */
+.sidebar {
+  width: 232px;
+  flex-shrink: 0;
+  background: var(--card);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  padding: 14px 10px;
+}
+.new-chat {
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  background: transparent;
+  border-radius: 9px;
+  padding: 10px 12px;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-bottom: 12px;
+  white-space: nowrap;
+}
+.new-chat:hover { background: var(--accent-soft); }
+.session-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.session-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--ink-soft);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+.session-item:hover { background: var(--accent-soft); color: var(--ink); }
+.session-item.active { background: var(--accent-soft); color: var(--ink); font-weight: 600; }
+.session-title {
+  flex: 1; overflow: hidden;
+  white-space: nowrap; text-overflow: ellipsis;
+}
+.session-del {
+  border: none; background: none; color: var(--ink-soft);
+  font-size: 14px; cursor: pointer; padding: 0 2px;
+  opacity: 0; flex-shrink: 0;
+}
+.session-item:hover .session-del { opacity: .7; }
+.session-del:hover { color: #ef4444; opacity: 1; }
+.sidebar-foot {
+  font-size: 11px; color: var(--ink-soft);
+  padding: 10px 6px 2px; text-align: center;
+  border-top: 1px solid var(--border);
+}
+
+.main {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   background: var(--bg);
 }
+.menu-btn { display: none; }
 
 /* ---- 顶栏 ---- */
 .topbar {
@@ -304,6 +367,28 @@ body {
   cursor: pointer;
 }
 .ghost-btn:hover { color: var(--ink); }
+
+/* ---- 窄屏：侧栏变抽屉 ---- */
+@media (max-width: 900px) {
+  .shell { max-width: 100%; }
+  .sidebar {
+    position: fixed;
+    left: 0; top: 0; bottom: 0;
+    z-index: 40;
+    transform: translateX(-100%);
+    transition: transform .2s ease;
+    box-shadow: 0 0 40px rgba(0,0,0,0.2);
+  }
+  .sidebar.open { transform: translateX(0); }
+  .sidebar-mask {
+    position: fixed; inset: 0;
+    background: rgba(15, 23, 32, 0.4);
+    z-index: 39;
+    display: none;
+  }
+  .sidebar-mask.show { display: block; }
+  .menu-btn { display: flex; }
+}
 
 /* ---- 深色主题 ---- */
 body[data-theme="dark"] {
