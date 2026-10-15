@@ -10,3 +10,4 @@ venv/
 seriallens-report-*.md
 .DS_Store
 Thumbs.db
+webapp/.profiles/

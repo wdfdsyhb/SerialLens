@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SerialLens · AI 串口侦探</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="shell">
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">SL</span>
+      <span class="brand-name">SerialLens</span>
+      <span class="brand-sub">AI 串口侦探 · 智能体</span>
+    </div>
+    <span class="status-dot" id="statusDot" title="服务状态"></span>
+  </header>
+
+  <main class="chat" id="chat">
+    <div class="welcome" id="welcome">
+      <div class="welcome-title">你好，我是 SerialLens</div>
+      <div class="welcome-text">
+        我让 AI Agent 也能「看懂」串口数据：乱码诊断、协议识别、协议学习并生成
+        单片机可用的 C 解析器。当前为演示模式（内置虚拟传感器数据，无需硬件）。
+        试试下面的快捷提问，或直接输入你的问题。
+      </div>
+    </div>
+  </main>
+
+  <div class="chips" id="chips">
+    <button class="chip" data-q="我的串口收到一堆乱码，完全看不懂">🔍 串口乱码诊断</button>
+    <button class="chip" data-q="帮我分析这段传感器数据是什么协议">📡 协议识别分析</button>
+    <button class="chip" data-q="学习这个协议并生成 C 解析器">⚙️ 学习协议 → 生成 C 代码</button>
+  </div>
+
+  <footer class="composer">
+    <textarea id="input" rows="1" placeholder="描述你的串口问题…" maxlength="500"></textarea>
+    <button id="send" class="send" title="发送">发送</button>
+  </footer>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>
