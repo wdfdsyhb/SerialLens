@@ -17,6 +17,7 @@ LLM 接入两路：
 
 from __future__ import annotations
 
+import base64
 import json
 import uuid
 from pathlib import Path
@@ -73,9 +74,10 @@ _FREE_SYSTEM = (
 )
 
 _FILE_SYSTEM = (
-    "你是 SerialLens——AI 串口侦探。用户上传了真实数据文件，引擎已给出"
-    "HEX/文本视图与启发式识别结果。请基于给定内容分析：可能是什么协议/问题、"
-    "关键特征、下一步建议。禁止编造文件中不存在的内容；证据不足就明说。"
+    "你是 SerialLens——AI 串口侦探。用户上传了真实数据（文本日志、HEX/二进制或图片），"
+    "引擎已给出 HEX/文本视图与启发式识别结果。请基于给定内容分析：可能是什么协议/问题、"
+    "关键特征、下一步建议。若附带图片，请直接基于图片实际内容观察与描述（如板卡、"
+    "接线、示波器/逻辑分析仪截图、报错界面）。禁止编造不存在的内容；证据不足就明说。"
     "简体中文、markdown、300 字内。"
 )
 
@@ -83,6 +85,35 @@ _DEMO_WORDS = ("演示", "示例", "demo", "Demo")
 
 
 # ---------------------------------------------------------------- LLM 层
+
+
+def _guess_image_mime(raw: bytes) -> str:
+    if raw.startswith(b"\x89PNG"):
+        return "image/png"
+    if raw.startswith(b"\xFF\xD8"):
+        return "image/jpeg"
+    if raw.startswith((b"GIF8",)):
+        return "image/gif"
+    if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp"
+    return "image/png"
+
+
+def _vision_messages(system: str, user: str, images: list[bytes] | None, mime: str = "image/png") -> list[dict]:
+    """构造 OpenAI 兼容消息：无图=纯文本；有图=content 数组（text + image_url base64）."""
+    if not images:
+        return [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+    content: list[dict] = [{"type": "text", "text": user}]
+    for raw in images:
+        b64 = base64.b64encode(raw).decode()
+        content.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": content},
+    ]
 
 
 def _runtime_llm() -> LLMConfig:
@@ -99,18 +130,16 @@ def _runtime_llm_available() -> bool:
     return _runtime_llm().available
 
 
-def _llm_chat_completion(cfg: LLMConfig, system: str, user: str, timeout: float = 30.0) -> str:
-    """统一 LLM 调用入口（OpenAI 兼容 /chat/completions）。异常向上抛，由调用方降级."""
+def _llm_chat_completion(cfg: LLMConfig, system: str, user: str, images: list[bytes] | None = None,
+                         mime: str = "image/png", timeout: float = 30.0) -> str:
+    """统一 LLM 调用入口（OpenAI 兼容 /chat/completions，支持视觉消息）。异常向上抛，由调用方降级."""
     with httpx.Client(timeout=timeout) as client:
         resp = client.post(
             f"{cfg.base_url}/chat/completions",
             headers={"Authorization": f"Bearer {cfg.api_key}"},
             json={
                 "model": cfg.model,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
+                "messages": _vision_messages(system, user, images, mime),
                 "temperature": 0.3,
                 "max_tokens": 800,
             },
@@ -155,17 +184,14 @@ def _file_kind(name: str, mime: str, raw: bytes) -> str:
 
 
 def _file_prompt(message: str, files: list[dict]) -> str:
-    parts = [f"用户提问：{message or '帮我分析这个文件'}"]
+    parts = [f"用户提问：{message or '帮我分析这些数据'}"]
     for f in files[:3]:
         raw = f["raw"]
         if f["kind"] == "text":
             body = raw.decode("utf-8", errors="replace")[:2000]
             parts.append(f"附件 {f['name']}（文本，{len(raw)} 字节）：\n```\n{body}\n```")
         elif f["kind"] == "image":
-            parts.append(
-                f"附件 {f['name']}（图片，{len(raw)} 字节）。当前接口未启用视觉输入，"
-                "请如实告知用户：该模型暂不支持读图，建议转述图片内容或改传文本/数据文件。"
-            )
+            parts.append(f"附件 {f['name']}（图片，{len(raw)} 字节，已通过视觉输入通道附加给模型）")
         else:
             dump = hexdump_of(raw[:256])
             parts.append(f"附件 {f['name']}（二进制，{len(raw)} 字节，前 256 字节 HEX）：\n```\n{dump}\n```")
@@ -195,16 +221,22 @@ def chat(req: ChatRequest) -> dict:
     cfg = _runtime_llm()
     files = [_FILES[f] for f in (req.file_ids or []) if f in _FILES]
 
-    # 1) 附件优先：真实数据分析
+    # 1) 附件优先：真实数据分析（图片走视觉通道）
     if files:
         first = files[0]
         if cfg.available:
+            images = [f["raw"] for f in files if f["kind"] == "image"][:3]
+            img_file = next((f for f in files if f["kind"] == "image"), None)
+            mime = (img_file["mime"] if img_file and img_file.get("mime") else None) or (img_file and _guess_image_mime(img_file["raw"])) or "image/png"
             try:
-                reply = _llm_chat_completion(cfg, _FILE_SYSTEM, _file_prompt(req.message, files))
+                reply = _llm_chat_completion(
+                    cfg, _FILE_SYSTEM, _file_prompt(req.message, files),
+                    images=images or None, mime=mime,
+                )
                 return _result("analyze", "文件数据分析", reply, llm=True, data={"hexdump": hexdump_of(first["raw"][:128]) if first["kind"] != "text" else ""})
             except Exception:
                 pass  # 降级：引擎数据视图
-        view = _view(first["raw"]) if first["kind"] != "image" else {"hexdump": "", "text_view": "", "heuristic": "图片文件（暂不支持视觉分析）"}
+        view = _view(first["raw"]) if first["kind"] != "image" else {"hexdump": "", "text_view": "", "heuristic": "图片文件：在 ⚙ 配置支持视觉的模型后可分析"}
         return _result(
             "analyze", "文件数据分析",
             "引擎已生成数据视图（见下）。在右上角 ⚙ 配置 AI 后可获得对话式分析。",

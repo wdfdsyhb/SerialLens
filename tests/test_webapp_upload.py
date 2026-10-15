@@ -48,21 +48,41 @@ class TestChatWithFile:
     def test_text_file_content_reaches_llm(self, client, monkeypatch):
         client.post("/api/settings", json={"api_key": "sk-x"})
         seen = []
-        monkeypatch.setattr(appmod, "_llm_chat_completion", lambda cfg, system, user: seen.append(user) or "基于你日志的分析")
+        monkeypatch.setattr(appmod, "_llm_chat_completion",
+                            lambda cfg, system, user, images=None, mime="image/png": seen.append(user) or "基于你日志的分析")
 
         fid = client.post("/api/upload", files={"file": ("uart.log", b"ERR: timeout at 0x1F", "text/plain")}).json()["file_id"]
         resp = client.post("/api/chat", json={"message": "帮我分析这个日志", "file_ids": [fid]})
         assert resp.json()["reply"] == "基于你日志的分析"
         assert "timeout at 0x1F" in seen[0]
 
-    def test_image_without_vision_hint(self, client, monkeypatch):
+    def test_image_sent_as_vision_input(self, client, monkeypatch):
+        """图片附件走视觉消息通道（base64），不再拼「不支持」占位文案."""
         client.post("/api/settings", json={"api_key": "sk-x"})
-        monkeypatch.setattr(appmod, "_llm_chat_completion", lambda cfg, system, user: "ok")
+        seen = []
+        monkeypatch.setattr(appmod, "_llm_chat_completion",
+                            lambda cfg, system, user, images=None, mime="image/png": seen.append((user, images)) or "图中是一块开发板")
 
-        fid = client.post("/api/upload", files={"file": ("b.png", b"\x89PNG", "image/png")}).json()["file_id"]
+        fid = client.post("/api/upload", files={"file": ("board.png", b"\x89PNG fake-image", "image/png")}).json()["file_id"]
         resp = client.post("/api/chat", json={"message": "看看这张图", "file_ids": [fid]})
-        body = resp.json()
-        assert body["llm_polished"] is True
+        assert resp.json()["reply"] == "图中是一块开发板"
+        user, images = seen[0]
+        assert images and images[0] == b"\x89PNG fake-image"   # 原始字节进视觉通道
+        assert "不支持" not in user                              # prompt 里没有降级占位
+
+    def test_vision_messages_structure(self):
+        """OpenAI 兼容视觉消息格式：text + image_url(base64 data URI)."""
+        msgs = appmod._vision_messages("sys-prompt", "user-text", [b"\x89PNG"])
+        assert msgs[0] == {"role": "system", "content": "sys-prompt"}
+        content = msgs[1]["content"]
+        assert isinstance(content, list) and content[0]["type"] == "text"
+        img = content[1]
+        assert img["type"] == "image_url"
+        assert img["image_url"]["url"].startswith("data:image/png;base64,")
+
+    def test_vision_messages_without_images_falls_back_to_plain(self):
+        msgs = appmod._vision_messages("sys-prompt", "user-text", None)
+        assert msgs[1]["content"] == "user-text"
 
 
 class TestNoAutoScenario:

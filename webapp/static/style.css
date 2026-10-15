@@ -299,6 +299,14 @@ body {
   opacity: .85;
   margin-top: 4px;
 }
+.msg.user .bubble img {
+  display: block;
+  max-width: 200px;
+  max-height: 150px;
+  border-radius: 8px;
+  margin-top: 6px;
+  object-fit: cover;
+}
 #input {
   flex: 1;
   resize: none;

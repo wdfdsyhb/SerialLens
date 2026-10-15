@@ -78,10 +78,17 @@
     b.className = "bubble";
     b.textContent = text;
     (files || []).forEach(function (f) {
-      var note = document.createElement("span");
-      note.className = "file-note";
-      note.textContent = "📎 " + f.name;
-      b.appendChild(note);
+      if (f.kind === "image" && f.url) {
+        var img = document.createElement("img");
+        img.src = f.url;
+        img.alt = f.name;
+        b.appendChild(img);
+      } else {
+        var note = document.createElement("span");
+        note.className = "file-note";
+        note.textContent = "📎 " + f.name;
+        b.appendChild(note);
+      }
     });
     wrap.appendChild(b);
     chatEl.appendChild(wrap);
@@ -238,10 +245,13 @@
     currentId = s.id;
     return s;
   }
-  function appendMessage(role, text, result) {
+  function appendMessage(role, text, result, files) {
     var s = ensureSession(text || (result && result.title) || "新任务");
-    if (role === "user") { s.messages.push({ role: "user", text: text }); }
-    else { s.messages.push({ role: "bot", result: result }); }
+    if (role === "user") {
+      // 历史存储不含 blob url（会话级失效），只存元信息
+      var storedFiles = (files || []).map(function (f) { return { name: f.name, kind: f.kind }; });
+      s.messages.push({ role: "user", text: text, files: storedFiles });
+    } else { s.messages.push({ role: "bot", result: result }); }
     saveSessions();
     renderSessionList();
   }
@@ -293,7 +303,7 @@
     currentId = id;
     clearChat();
     s.messages.forEach(function (m) {
-      if (m.role === "user") { addUserMsg(m.text); }
+      if (m.role === "user") { addUserMsg(m.text, m.files); }
       else if (m.result) { addBotMsg(m.result); }
     });
     renderSessionList();
@@ -336,9 +346,14 @@
   function uploadFile(f) {
     var fd = new FormData();
     fd.append("file", f);
+    var previewUrl = f.type && f.type.startsWith("image/") ? URL.createObjectURL(f) : null;
     fetch("/api/upload", { method: "POST", body: fd })
       .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status)); })
-      .then(function (d) { pendingFiles.push(d); renderAttachBar(); })
+      .then(function (d) {
+        d.url = previewUrl;
+        pendingFiles.push(d);
+        renderAttachBar();
+      })
       .catch(function () { alert("上传失败：请确认文件不超过 5MB"); });
   }
 
@@ -357,7 +372,7 @@
     if (welcome) welcome.remove();
 
     addUserMsg(text.trim(), pendingFiles.slice());
-    appendMessage("user", text.trim());
+    appendMessage("user", text.trim(), null, pendingFiles.slice());
     var typing = addTyping();
     var sentFiles = pendingFiles.slice();
     pendingFiles = [];
