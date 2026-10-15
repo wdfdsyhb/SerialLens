@@ -11,3 +11,4 @@ seriallens-report-*.md
 .DS_Store
 Thumbs.db
 webapp/.profiles/
+webapp/.env.local

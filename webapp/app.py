@@ -49,13 +49,27 @@ _FILES: dict = {}
 _SESSIONS: dict = {}
 _HISTORY_LIMIT = 10
 
-# 访问门禁：密码来自环境变量，未设置则自动生成（启动日志打印一次）
-_ACCESS_PASSWORD: str = os.environ.get("SERIALLENS_ACCESS_PASSWORD") or secrets.token_urlsafe(6)
+# 访问门禁：密码优先级 = 环境变量 > webapp/.env.local（本地文件，不入库） > 自动生成
+_ENV_LOCAL = Path(__file__).parent / ".env.local"
+
+
+def _load_password() -> str:
+    env_pw = os.environ.get("SERIALLENS_ACCESS_PASSWORD")
+    if env_pw:
+        return env_pw
+    if _ENV_LOCAL.exists():
+        val = _ENV_LOCAL.read_text(encoding="utf-8").strip()
+        if val:
+            return val
+    return secrets.token_urlsafe(6)
+
+
+_ACCESS_PASSWORD: str = _load_password()
 # 已签发的会话令牌（内存态）
 _TOKENS: set = set()
 _PUBLIC_API = {"/api/login", "/api/health"}
 
-if not os.environ.get("SERIALLENS_ACCESS_PASSWORD"):
+if os.environ.get("SERIALLENS_ACCESS_PASSWORD") is None and not _ENV_LOCAL.exists():
     # 自动生成时打印一次，便于部署者记录并提交给评审
     print(f"[SerialLens] 本次运行的访问密码（提交评审用）：{_ACCESS_PASSWORD}  "
           f"（设置 SERIALLENS_ACCESS_PASSWORD 环境变量可自定义固定密码）", flush=True)
