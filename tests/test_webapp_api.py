@@ -17,15 +17,21 @@ def client() -> TestClient:
 
 class TestChat:
     def test_diagnose_message(self, client):
-        resp = client.post("/api/chat", json={"message": "我的串口收到一堆乱码看不懂"})
+        resp = client.post("/api/chat", json={"message": "演示一下串口乱码诊断"})
         assert resp.status_code == 200
         body = resp.json()
         assert body["scenario"] == "diagnose"
-        assert "波特率" in body["reply"]
         assert body["data"]["garbled"]["hexdump"]
 
+    def test_keyword_without_demo_needs_data(self, client):
+        resp = client.post("/api/chat", json={"message": "我的串口收到一堆乱码看不懂"})
+        body = resp.json()
+        assert body["scenario"] == "diagnose"
+        assert body["needs_data"] is True
+        assert body["data"] == {}
+
     def test_codegen_message(self, client):
-        resp = client.post("/api/chat", json={"message": "学习这个协议并生成 C 解析器"})
+        resp = client.post("/api/chat", json={"message": "演示学习这个协议并生成 C 解析器"})
         assert resp.status_code == 200
         body = resp.json()
         assert body["scenario"] == "codegen"

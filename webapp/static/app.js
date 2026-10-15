@@ -71,12 +71,18 @@
   }
 
   // ---------- 消息渲染 ----------
-  function addUserMsg(text) {
+  function addUserMsg(text, files) {
     var wrap = document.createElement("div");
     wrap.className = "msg user";
     var b = document.createElement("div");
     b.className = "bubble";
     b.textContent = text;
+    (files || []).forEach(function (f) {
+      var note = document.createElement("span");
+      note.className = "file-note";
+      note.textContent = "📎 " + f.name;
+      b.appendChild(note);
+    });
     wrap.appendChild(b);
     chatEl.appendChild(wrap);
     scrollBottom();
@@ -306,22 +312,61 @@
   newChatBtn.onclick = function () { newSession(); closeDrawer(); };
   renderSessionList();
 
+  // ---------- 附件上传 ----------
+  var attachBtn = document.getElementById("attachBtn");
+  var fileInput = document.getElementById("fileInput");
+  var attachBar = document.getElementById("attachBar");
+  var pendingFiles = [];   // [{file_id, name, kind}]
+
+  function renderAttachBar() {
+    attachBar.innerHTML = "";
+    pendingFiles.forEach(function (f, i) {
+      var chip = document.createElement("span");
+      chip.className = "attach-chip";
+      chip.appendChild(document.createTextNode("📎 " + f.name));
+      var x = document.createElement("button");
+      x.textContent = "×";
+      x.title = "移除附件";
+      x.onclick = function () { pendingFiles.splice(i, 1); renderAttachBar(); };
+      chip.appendChild(x);
+      attachBar.appendChild(chip);
+    });
+  }
+
+  function uploadFile(f) {
+    var fd = new FormData();
+    fd.append("file", f);
+    fetch("/api/upload", { method: "POST", body: fd })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status)); })
+      .then(function (d) { pendingFiles.push(d); renderAttachBar(); })
+      .catch(function () { alert("上传失败：请确认文件不超过 5MB"); });
+  }
+
+  attachBtn.onclick = function () { fileInput.click(); };
+  fileInput.onchange = function () {
+    Array.prototype.slice.call(fileInput.files).forEach(uploadFile);
+    fileInput.value = "";
+  };
+
   // ---------- 交互 ----------
   function send(text) {
-    if (busy || !text.trim()) return;
+    if (busy || (!text.trim() && !pendingFiles.length)) return;
     busy = true;
     sendEl.disabled = true;
     var welcome = document.getElementById("welcome");
     if (welcome) welcome.remove();
 
-    addUserMsg(text.trim());
+    addUserMsg(text.trim(), pendingFiles.slice());
     appendMessage("user", text.trim());
     var typing = addTyping();
+    var sentFiles = pendingFiles.slice();
+    pendingFiles = [];
+    renderAttachBar();
 
     fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: text })
+      body: JSON.stringify({ message: text, file_ids: sentFiles.map(function (f) { return f.file_id; }) })
     })
       .then(function (r) { return r.json(); })
       .then(function (result) {

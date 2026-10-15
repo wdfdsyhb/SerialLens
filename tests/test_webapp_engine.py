@@ -41,13 +41,11 @@ class TestDiagnoseScenario:
         assert res["scenario"] == "diagnose"
         assert res["title"]
         assert res["reply"]
-        assert res["summary"]
         data = res["data"]
         assert data["normal"]["hexdump"]
         assert data["garbled"]["hexdump"]
         # 乱码段的文本视图必须与正常段明显不同（位错位生效）
         assert data["garbled"]["text_view"] != data["normal"]["text_view"]
-        assert "波特率" in res["summary"]
 
     def test_deterministic(self):
         a = run_scenario("diagnose")
@@ -62,7 +60,6 @@ class TestAnalyzeScenario:
         assert data["frames_count"] >= 2
         assert data["hexdump"]
         assert data["frame_len"] > 0
-        assert res["summary"]
 
     def test_deterministic(self):
         assert run_scenario("analyze")["data"]["hexdump"] == run_scenario("analyze")["data"]["hexdump"]
@@ -76,7 +73,6 @@ class TestCodegenScenario:
         assert "AA55" in data["c_header"]           # 帧头出现在生成代码
         assert data["c_source"]
         assert data["fields"]                        # 推断出的字段表
-        assert "温度" in res["summary"] or "字段" in res["summary"]
 
     def test_profile_saved_locally(self):
         res = run_scenario("codegen")

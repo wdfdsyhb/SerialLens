@@ -48,8 +48,13 @@
   </div>
 
   <footer class="composer">
-    <textarea id="input" rows="1" placeholder="描述你的串口问题…" maxlength="500"></textarea>
-    <button id="send" class="send" title="发送">发送</button>
+    <div class="attach-bar" id="attachBar"></div>
+    <div class="composer-row">
+      <button class="icon-btn" id="attachBtn" title="上传数据文件（文本日志 / HEX / .bin / 图片）">📎</button>
+      <textarea id="input" rows="1" placeholder="描述你的串口问题…" maxlength="500"></textarea>
+      <button id="send" class="send" title="发送">发送</button>
+    </div>
+    <input type="file" id="fileInput" hidden multiple>
   </footer>
   </div>
 

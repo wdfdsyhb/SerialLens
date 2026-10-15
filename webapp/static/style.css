@@ -265,11 +265,39 @@ body {
 /* ---- 输入区 ---- */
 .composer {
   display: flex;
-  gap: 10px;
-  align-items: flex-end;
+  flex-direction: column;
+  gap: 6px;
   padding: 12px 20px 18px;
   background: var(--card);
   border-top: 1px solid var(--border);
+}
+.composer-row { display: flex; gap: 10px; align-items: flex-end; }
+.attach-bar { display: flex; gap: 8px; flex-wrap: wrap; }
+.attach-bar:empty { display: none; }
+.attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--accent-soft);
+  color: var(--ink);
+  border-radius: 7px;
+  padding: 4px 10px;
+  font-size: 12px;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attach-chip button {
+  border: none; background: none; cursor: pointer;
+  color: var(--ink-soft); font-size: 13px; padding: 0 2px;
+}
+.attach-chip button:hover { color: #ef4444; }
+.msg.user .bubble .file-note {
+  display: block;
+  font-size: 12px;
+  opacity: .85;
+  margin-top: 4px;
 }
 #input {
   flex: 1;

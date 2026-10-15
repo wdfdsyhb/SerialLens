@@ -69,7 +69,7 @@ class TestFreeChat:
         client.post("/api/settings", json={"api_key": "sk-x"})
         monkeypatch.setattr(appmod, "_llm_chat_completion", lambda cfg, system, user: "模型润色后的诊断回复")
 
-        resp = client.post("/api/chat", json={"message": "串口全是乱码"})
+        resp = client.post("/api/chat", json={"message": "演示一下串口乱码"})
         body = resp.json()
         assert body["scenario"] == "diagnose"
         assert body["reply"] == "模型润色后的诊断回复"
