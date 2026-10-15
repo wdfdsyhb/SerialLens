@@ -57,7 +57,7 @@ class TestFreeChat:
     def test_assist_with_llm_calls_model(self, client, monkeypatch):
         client.post("/api/settings", json={"api_key": "sk-x"})
         calls = []
-        monkeypatch.setattr(appmod, "_llm_chat_completion", lambda cfg, system, user: calls.append(user) or "这是模型的自由回复")
+        monkeypatch.setattr(appmod, "_llm_chat_completion", lambda cfg, system, user, history=None: calls.append(user) or "这是模型的自由回复")
 
         resp = client.post("/api/chat", json={"message": "你能处理 Modbus 吗？"})
         body = resp.json()
@@ -67,7 +67,7 @@ class TestFreeChat:
 
     def test_scenario_with_llm_polishes_reply(self, client, monkeypatch):
         client.post("/api/settings", json={"api_key": "sk-x"})
-        monkeypatch.setattr(appmod, "_llm_chat_completion", lambda cfg, system, user: "模型润色后的诊断回复")
+        monkeypatch.setattr(appmod, "_llm_chat_completion", lambda cfg, system, user, history=None: "模型润色后的诊断回复")
 
         resp = client.post("/api/chat", json={"message": "演示一下串口乱码"})
         body = resp.json()

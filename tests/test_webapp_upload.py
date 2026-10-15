@@ -49,7 +49,7 @@ class TestChatWithFile:
         client.post("/api/settings", json={"api_key": "sk-x"})
         seen = []
         monkeypatch.setattr(appmod, "_llm_chat_completion",
-                            lambda cfg, system, user, images=None, mime="image/png": seen.append(user) or "基于你日志的分析")
+                            lambda cfg, system, user, images=None, mime="image/png", history=None: seen.append(user) or "基于你日志的分析")
 
         fid = client.post("/api/upload", files={"file": ("uart.log", b"ERR: timeout at 0x1F", "text/plain")}).json()["file_id"]
         resp = client.post("/api/chat", json={"message": "帮我分析这个日志", "file_ids": [fid]})
@@ -61,7 +61,7 @@ class TestChatWithFile:
         client.post("/api/settings", json={"api_key": "sk-x"})
         seen = []
         monkeypatch.setattr(appmod, "_llm_chat_completion",
-                            lambda cfg, system, user, images=None, mime="image/png": seen.append((user, images)) or "图中是一块开发板")
+                            lambda cfg, system, user, images=None, mime="image/png", history=None: seen.append((user, images)) or "图中是一块开发板")
 
         fid = client.post("/api/upload", files={"file": ("board.png", b"\x89PNG fake-image", "image/png")}).json()["file_id"]
         resp = client.post("/api/chat", json={"message": "看看这张图", "file_ids": [fid]})

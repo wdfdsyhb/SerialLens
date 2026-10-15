@@ -24,7 +24,7 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -43,11 +43,15 @@ MAX_UPLOAD = 5 * 1024 * 1024
 _RUNTIME_CFG: dict = {}
 # 已上传文件（内存态：file_id → {name, kind, mime, raw}）
 _FILES: dict = {}
+# 会话消息历史（内存态：session_id → [{role, content}]）——多轮上下文
+_SESSIONS: dict = {}
+_HISTORY_LIMIT = 10
 
 
 class ChatRequest(BaseModel):
     message: str
     file_ids: list[str] = []
+    session_id: str = ""
 
 
 class SettingsRequest(BaseModel):
@@ -99,21 +103,35 @@ def _guess_image_mime(raw: bytes) -> str:
     return "image/png"
 
 
-def _vision_messages(system: str, user: str, images: list[bytes] | None, mime: str = "image/png") -> list[dict]:
-    """构造 OpenAI 兼容消息：无图=纯文本；有图=content 数组（text + image_url base64）."""
+def _vision_messages(system: str, user: str, images: list[bytes] | None, mime: str = "image/png",
+                     history: list[dict] | None = None) -> list[dict]:
+    """构造 OpenAI 兼容消息：无图=纯文本；有图=content 数组（text + image_url base64）。历史插在当前消息之前."""
+    msgs: list[dict] = [{"role": "system", "content": system}]
+    msgs.extend(history or [])
     if not images:
-        return [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ]
-    content: list[dict] = [{"type": "text", "text": user}]
-    for raw in images:
-        b64 = base64.b64encode(raw).decode()
-        content.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
-    return [
-        {"role": "system", "content": system},
-        {"role": "user", "content": content},
-    ]
+        msgs.append({"role": "user", "content": user})
+    else:
+        content: list[dict] = [{"type": "text", "text": user}]
+        for raw in images:
+            b64 = base64.b64encode(raw).decode()
+            content.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
+        msgs.append({"role": "user", "content": content})
+    return msgs
+
+
+def _session_history(sid: str) -> list[dict]:
+    if not sid:
+        return []
+    return list(_SESSIONS.get(sid, []))[-_HISTORY_LIMIT:]
+
+
+def _append_history(sid: str, role: str, content: str) -> None:
+    if not sid:
+        return
+    _SESSIONS.setdefault(sid, []).append({"role": role, "content": content})
+    hist = _SESSIONS[sid]
+    if len(hist) > _HISTORY_LIMIT * 3:      # 硬上限防内存膨胀
+        del hist[: len(hist) - _HISTORY_LIMIT * 2]
 
 
 def _runtime_llm() -> LLMConfig:
@@ -131,21 +149,48 @@ def _runtime_llm_available() -> bool:
 
 
 def _llm_chat_completion(cfg: LLMConfig, system: str, user: str, images: list[bytes] | None = None,
-                         mime: str = "image/png", timeout: float = 30.0) -> str:
-    """统一 LLM 调用入口（OpenAI 兼容 /chat/completions，支持视觉消息）。异常向上抛，由调用方降级."""
+                         mime: str = "image/png", timeout: float = 30.0,
+                         history: list[dict] | None = None) -> str:
+    """统一 LLM 调用入口（OpenAI 兼容 /chat/completions，支持视觉与多轮历史）。异常向上抛，由调用方降级."""
     with httpx.Client(timeout=timeout) as client:
         resp = client.post(
             f"{cfg.base_url}/chat/completions",
             headers={"Authorization": f"Bearer {cfg.api_key}"},
             json={
                 "model": cfg.model,
-                "messages": _vision_messages(system, user, images, mime),
+                "messages": _vision_messages(system, user, images, mime, history),
                 "temperature": 0.3,
                 "max_tokens": 800,
             },
         )
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"]
+
+
+def _llm_stream_completion(cfg: LLMConfig, system: str, messages: list[dict], timeout: float = 40.0):
+    """流式 LLM 调用：messages 为 [{role, content}]（不含 system），逐块 yield 文本增量。异常向上抛."""
+    full = [{"role": "system", "content": system}] + list(messages)
+    with httpx.Client(timeout=timeout) as client:
+        with client.stream(
+            "POST",
+            f"{cfg.base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {cfg.api_key}"},
+            json={"model": cfg.model, "messages": full, "temperature": 0.3, "max_tokens": 800, "stream": True},
+        ) as resp:
+            resp.raise_for_status()
+            for line in resp.iter_lines():
+                if not line or not line.startswith("data:"):
+                    continue
+                payload = line[5:].strip()
+                if payload == "[DONE]":
+                    break
+                try:
+                    obj = json.loads(payload)
+                except json.JSONDecodeError:
+                    continue
+                delta = (obj.get("choices") or [{}])[0].get("delta", {}).get("content")
+                if delta:
+                    yield delta
 
 
 def _llm_polish(message: str, result: dict) -> str | None:
@@ -232,7 +277,10 @@ def chat(req: ChatRequest) -> dict:
                 reply = _llm_chat_completion(
                     cfg, _FILE_SYSTEM, _file_prompt(req.message, files),
                     images=images or None, mime=mime,
+                    history=_session_history(req.session_id),
                 )
+                _append_history(req.session_id, "user", req.message or "（分析上传文件）")
+                _append_history(req.session_id, "assistant", reply)
                 return _result("analyze", "文件数据分析", reply, llm=True, data={"hexdump": hexdump_of(first["raw"][:128]) if first["kind"] != "text" else ""})
             except Exception:
                 pass  # 降级：引擎数据视图
@@ -256,10 +304,13 @@ def chat(req: ChatRequest) -> dict:
         result["needs_data"] = False
         return result
 
-    # 3) 其余：LLM 自由对话；无 LLM 时不跑虚拟数据冒充分析
+    # 3) 其余：LLM 自由对话（带会话历史）；无 LLM 时不跑虚拟数据冒充分析
     if cfg.available:
+        history = _session_history(req.session_id)
         try:
-            reply = _llm_chat_completion(cfg, _FREE_SYSTEM, req.message)
+            reply = _llm_chat_completion(cfg, _FREE_SYSTEM, req.message, history=history)
+            _append_history(req.session_id, "user", req.message)
+            _append_history(req.session_id, "assistant", reply)
             return _result(scenario or "assist", "对话", reply, llm=True, data={})
         except Exception:
             pass
@@ -273,6 +324,129 @@ def chat(req: ChatRequest) -> dict:
     result["llm_polished"] = False
     result["needs_data"] = False
     return result
+
+
+def _sse(ev: str, payload) -> str:
+    return f"event: {ev}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+@app.post("/api/chat/stream")
+def chat_stream(req: ChatRequest):
+    """SSE 流式对话：meta → delta*（流式文本）→ result（完整结构）→ done."""
+
+    def gen():
+        scenario = route_intent(req.message)
+        cfg = _runtime_llm()
+        files = [_FILES[f] for f in (req.file_ids or []) if f in _FILES]
+
+        # 1) 附件
+        if files:
+            yield _sse("meta", {"scenario": "analyze", "title": "文件数据分析"})
+            first = files[0]
+            data_view = {"hexdump": hexdump_of(first["raw"][:128]) if first["kind"] != "text" else ""}
+            if cfg.available:
+                images = [f["raw"] for f in files if f["kind"] == "image"][:3]
+                img_file = next((f for f in files if f["kind"] == "image"), None)
+                mime = (img_file["mime"] if img_file and img_file.get("mime") else None) or (img_file and _guess_image_mime(img_file["raw"])) or "image/png"
+                hist = _session_history(req.session_id)
+                try:
+                    if images:
+                        # 视觉消息走一次性调用（content 数组含图），不做逐字流
+                        reply = _llm_chat_completion(cfg, _FILE_SYSTEM, _file_prompt(req.message, files),
+                                                     images=images, mime=mime, history=hist)
+                        yield _sse("delta", {"text": reply})
+                    else:
+                        parts = []
+                        for chunk in _llm_stream_completion(cfg, _FILE_SYSTEM,
+                                                            hist + [{"role": "user", "content": _file_prompt(req.message, files)}]):
+                            parts.append(chunk)
+                            yield _sse("delta", {"text": chunk})
+                        reply = "".join(parts)
+                    _append_history(req.session_id, "user", req.message or "（分析上传文件）")
+                    _append_history(req.session_id, "assistant", reply)
+                    yield _sse("result", _result("analyze", "文件数据分析", reply, llm=True, data=data_view))
+                    yield _sse("done", {})
+                    return
+                except Exception:
+                    pass
+            fallback = "引擎已生成数据视图（见下）。在右上角 ⚙ 配置 AI 后可获得对话式分析。"
+            view = _view(first["raw"]) if first["kind"] != "image" else {"hexdump": "", "text_view": "", "heuristic": "图片文件：在 ⚙ 配置支持视觉的模型后可分析"}
+            yield _sse("delta", {"text": fallback})
+            yield _sse("result", _result("analyze", "文件数据分析", fallback, llm=False, data=view))
+            yield _sse("done", {})
+            return
+
+        # 2) 演示触发
+        if any(w in req.message for w in _DEMO_WORDS):
+            target = scenario if scenario != "assist" else "diagnose"
+            result = run_scenario(target, req.message)
+            yield _sse("meta", {"scenario": result["scenario"], "title": result["title"]})
+            reply = result["reply"]
+            if cfg.available:
+                brief = {
+                    "scenario": result["scenario"], "title": result["title"], "steps": result["steps"],
+                    "data_brief": {k: v for k, v in result["data"].items()
+                                   if k in ("frames_count", "frame_len", "header", "length_rule", "fields", "heuristic")},
+                }
+                try:
+                    parts = []
+                    for chunk in _llm_stream_completion(cfg, _LLM_SYSTEM,
+                                                        [{"role": "user", "content": f"用户提问：{req.message}\n\n引擎结果：{json.dumps(brief, ensure_ascii=False)}"}]):
+                        parts.append(chunk)
+                        yield _sse("delta", {"text": chunk})
+                    reply = "".join(parts)
+                    result["llm_polished"] = True
+                except Exception:
+                    reply = result["reply"]           # 降级回状态说明
+                    result["llm_polished"] = False
+            else:
+                result["llm_polished"] = False
+                yield _sse("delta", {"text": reply})
+            result["reply"] = reply
+            result["needs_data"] = False
+            yield _sse("result", result)
+            yield _sse("done", {})
+            return
+
+        # 3) 自由对话 / 引导
+        if cfg.available:
+            yield _sse("meta", {"scenario": scenario or "assist", "title": "对话"})
+            hist = _session_history(req.session_id)
+            parts = []
+            try:
+                for chunk in _llm_stream_completion(cfg, _FREE_SYSTEM,
+                                                    hist + [{"role": "user", "content": req.message}]):
+                    parts.append(chunk)
+                    yield _sse("delta", {"text": chunk})
+                reply = "".join(parts)
+                _append_history(req.session_id, "user", req.message)
+                _append_history(req.session_id, "assistant", reply)
+                yield _sse("result", _result(scenario or "assist", "对话", reply, llm=True, data={}))
+            except Exception:
+                # 流中断：已收文本尽量保留，降级为引导语收尾
+                partial = "".join(parts)
+                fallback = partial or "AI 服务暂时不可用。可上传数据文件（📎），或说「演示」查看内置示例。"
+                yield _sse("delta", {"text": fallback if not partial else ""})
+                yield _sse("result", _result(scenario or "assist", "对话", fallback, llm=False, data={}))
+            yield _sse("done", {})
+            return
+
+        # 无 LLM：引导（不跑虚拟数据冒充分析）
+        if scenario != "assist":
+            reply = "要分析你的真实数据请用 📎 上传文件；查看内置示例请说「演示」。"
+            yield _sse("meta", {"scenario": scenario, "title": "等待数据"})
+            yield _sse("delta", {"text": reply})
+            yield _sse("result", _result(scenario, "等待数据", reply, llm=False, data={}, needs_data=True))
+        else:
+            result = run_scenario("assist")
+            result["llm_polished"] = False
+            result["needs_data"] = False
+            yield _sse("meta", {"scenario": "assist", "title": result["title"]})
+            yield _sse("delta", {"text": result["reply"]})
+            yield _sse("result", result)
+        yield _sse("done", {})
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
 
 
 @app.post("/api/upload")

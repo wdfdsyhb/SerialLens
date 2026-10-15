@@ -135,21 +135,8 @@
     return table;
   }
 
-  function addBotMsg(result) {
-    var wrap = document.createElement("div");
-    wrap.className = "msg bot";
-    var b = document.createElement("div");
-    b.className = "bubble";
-
-    var tag = document.createElement("span");
-    tag.className = "tag";
-    tag.textContent = result.title || result.scenario;
-    b.appendChild(tag);
-
-    var reply = document.createElement("div");
-    reply.innerHTML = renderMarkdown(result.reply || "");
-    b.appendChild(reply);
-
+  // 机器人消息的数据视图部分（步骤/hexdump/字段表/代码）——一次性与流式共用
+  function renderBotExtras(b, result) {
     if (result.steps && result.steps.length) {
       var det = document.createElement("details");
       det.className = "steps";
@@ -198,6 +185,24 @@
       sdet.appendChild(sd);
       b.appendChild(sdet);
     }
+  }
+
+  function addBotMsg(result) {
+    var wrap = document.createElement("div");
+    wrap.className = "msg bot";
+    var b = document.createElement("div");
+    b.className = "bubble";
+
+    var tag = document.createElement("span");
+    tag.className = "tag";
+    tag.textContent = result.title || result.scenario;
+    b.appendChild(tag);
+
+    var reply = document.createElement("div");
+    reply.innerHTML = renderMarkdown(result.reply || "");
+    b.appendChild(reply);
+
+    renderBotExtras(b, result);
 
     wrap.appendChild(b);
     chatEl.appendChild(wrap);
@@ -208,6 +213,80 @@
     var el = document.createElement("h3");
     el.textContent = text;
     return el;
+  }
+
+  // ---------- 流式（SSE）对话 ----------
+  function addStreamingBubble() {
+    var wrap = document.createElement("div");
+    wrap.className = "msg bot";
+    var b = document.createElement("div");
+    b.className = "bubble";
+    var tag = document.createElement("span");
+    tag.className = "tag";
+    tag.textContent = "…";
+    b.appendChild(tag);
+    var reply = document.createElement("div");
+    reply.className = "typing";
+    reply.textContent = "分析中";
+    b.appendChild(reply);
+    wrap.appendChild(b);
+    chatEl.appendChild(wrap);
+    scrollBottom();
+    return { wrap: wrap, tag: tag, reply: reply, bubble: b, text: "" };
+  }
+
+  function handleFrame(frame, holder, onResult) {
+    var ev = "", dataStr = "";
+    frame.split("\n").forEach(function (line) {
+      if (line.indexOf("event: ") === 0) ev = line.slice(7).trim();
+      else if (line.indexOf("data: ") === 0) dataStr += line.slice(6);
+    });
+    if (!ev || !dataStr) return;
+    var data;
+    try { data = JSON.parse(dataStr); } catch (e) { return; }
+    if (ev === "meta") {
+      holder.tag.textContent = data.title || data.scenario || "…";
+    } else if (ev === "delta") {
+      holder.text += data.text || "";
+      holder.reply.classList.remove("typing");
+      holder.reply.textContent = holder.text;
+      scrollBottom();
+    } else if (ev === "result") {
+      if (holder.reply.parentNode) holder.bubble.removeChild(holder.reply);
+      var final = document.createElement("div");
+      final.innerHTML = renderMarkdown(data.reply || holder.text);
+      holder.bubble.appendChild(final);
+      renderBotExtras(holder.bubble, data);
+      scrollBottom();
+      if (onResult) onResult(data);
+    }
+  }
+
+  function streamChat(payload, holder, onResult) {
+    return fetch("/api/chat/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    }).then(function (r) {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      var reader = r.body.getReader();
+      var dec = new TextDecoder();
+      var buf = "";
+      function pump() {
+        return reader.read().then(function (res) {
+          if (res.done) return;
+          buf += dec.decode(res.value, { stream: true });
+          var idx;
+          while ((idx = buf.indexOf("\n\n")) >= 0) {
+            var frame = buf.slice(0, idx);
+            buf = buf.slice(idx + 2);
+            handleFrame(frame, holder, onResult);
+          }
+          return pump();
+        });
+      }
+      return pump();
+    });
   }
 
   function scrollBottom() {
@@ -371,26 +450,29 @@
     var welcome = document.getElementById("welcome");
     if (welcome) welcome.remove();
 
+    // 预建会话，拿 session_id 供服务端多轮上下文
+    if (!currentSession()) {
+      var s0 = { id: "s" + Date.now(), title: (text.trim() || "附件分析").slice(0, 20), created: new Date().toISOString(), messages: [] };
+      sessions.unshift(s0);
+      currentId = s0.id;
+      renderSessionList();
+    }
+    var sid = currentSession().id;
+
     addUserMsg(text.trim(), pendingFiles.slice());
     appendMessage("user", text.trim(), null, pendingFiles.slice());
-    var typing = addTyping();
     var sentFiles = pendingFiles.slice();
     pendingFiles = [];
     renderAttachBar();
 
-    fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: text, file_ids: sentFiles.map(function (f) { return f.file_id; }) })
-    })
-      .then(function (r) { return r.json(); })
-      .then(function (result) {
-        typing.remove();
-        addBotMsg(result);
-        appendMessage("bot", null, result);
-      })
+    var holder = addStreamingBubble();
+    streamChat(
+      { message: text, file_ids: sentFiles.map(function (f) { return f.file_id; }), session_id: sid },
+      holder,
+      function (result) { appendMessage("bot", null, result); }
+    )
       .catch(function () {
-        typing.remove();
+        holder.wrap.remove();
         var wrap = document.createElement("div");
         wrap.className = "msg bot";
         wrap.innerHTML = '<div class="bubble"><p>服务暂时不可用，请稍后再试。</p></div>';
