@@ -59,6 +59,17 @@
   </footer>
   </div>
 
+  <div class="login-mask" id="loginMask">
+    <div class="login-card">
+      <span class="brand-mark login-mark">SL</span>
+      <div class="login-title">SerialLens · AI 串口侦探</div>
+      <div class="login-sub">请输入访问密码</div>
+      <input type="password" id="loginInput" placeholder="访问密码" autocomplete="current-password">
+      <button id="loginBtn" class="send login-btn">进入</button>
+      <div class="login-err" id="loginErr"></div>
+    </div>
+  </div>
+
   <div class="modal-mask" id="settingsModal" hidden>
     <div class="modal">
       <div class="modal-title">AI 设置 <span class="modal-badge" id="llmBadge">未配置</span></div>
@@ -78,6 +89,10 @@
         <span>模型名</span>
         <input id="cfgModel" placeholder="deepseek-chat" autocomplete="off">
       </label>
+      <div class="field access-row">
+        <span>访问密码（提交评审用）</span>
+        <code id="cfgPw">—</code>
+      </div>
       <div class="modal-actions">
         <button class="ghost-btn" id="cfgClose">取消</button>
         <button class="send" id="cfgSave">保存</button>

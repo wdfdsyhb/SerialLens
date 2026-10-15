@@ -14,7 +14,10 @@ from webapp.app import app
 @pytest.fixture()
 def client():
     appmod._RUNTIME_CFG.clear()
-    return TestClient(app)
+    c = TestClient(app)
+    token = c.post("/api/login", json={"password": appmod._ACCESS_PASSWORD}).json()["token"]
+    c.headers.update({"X-Access-Token": token})
+    return c
 
 
 class TestSettings:

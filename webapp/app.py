@@ -19,12 +19,14 @@ from __future__ import annotations
 
 import base64
 import json
+import os
+import secrets
 import uuid
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, HTTPException, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -47,11 +49,26 @@ _FILES: dict = {}
 _SESSIONS: dict = {}
 _HISTORY_LIMIT = 10
 
+# 访问门禁：密码来自环境变量，未设置则自动生成（启动日志打印一次）
+_ACCESS_PASSWORD: str = os.environ.get("SERIALLENS_ACCESS_PASSWORD") or secrets.token_urlsafe(6)
+# 已签发的会话令牌（内存态）
+_TOKENS: set = set()
+_PUBLIC_API = {"/api/login", "/api/health"}
+
+if not os.environ.get("SERIALLENS_ACCESS_PASSWORD"):
+    # 自动生成时打印一次，便于部署者记录并提交给评审
+    print(f"[SerialLens] 本次运行的访问密码（提交评审用）：{_ACCESS_PASSWORD}  "
+          f"（设置 SERIALLENS_ACCESS_PASSWORD 环境变量可自定义固定密码）", flush=True)
+
 
 class ChatRequest(BaseModel):
     message: str
     file_ids: list[str] = []
     session_id: str = ""
+
+
+class LoginRequest(BaseModel):
+    password: str = ""
 
 
 class SettingsRequest(BaseModel):
@@ -255,6 +272,35 @@ def _result(scenario: str, title: str, reply: str, *, llm: bool, data: dict,
         "llm_polished": llm,
         "needs_data": needs_data,
     }
+
+
+# ---------------------------------------------------------------- 访问门禁
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    """API 鉴权：除公开端点外，所有 /api/* 需要有效会话令牌."""
+    path = request.url.path
+    if path.startswith("/api/") and path not in _PUBLIC_API:
+        token = request.headers.get("X-Access-Token", "")
+        if not token or token not in _TOKENS:
+            return JSONResponse({"detail": "未授权：请先输入访问密码"}, status_code=401)
+    return await call_next(request)
+
+
+@app.post("/api/login")
+def login(req: LoginRequest) -> dict:
+    if not req.password or not secrets.compare_digest(req.password, _ACCESS_PASSWORD):
+        raise HTTPException(status_code=401, detail="访问密码不正确")
+    token = secrets.token_urlsafe(24)
+    _TOKENS.add(token)
+    return {"token": token}
+
+
+@app.get("/api/access")
+def access_info() -> dict:
+    """已登录用户查看当前访问密码（用于设置面板展示 / 提交给评委）."""
+    return {"password": _ACCESS_PASSWORD}
 
 
 # ---------------------------------------------------------------- API

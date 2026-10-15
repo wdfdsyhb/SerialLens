@@ -9,6 +9,65 @@
   var statusDot = document.getElementById("statusDot");
   var busy = false;
 
+  // ---------- 访问门禁 ----------
+  var loginMask = document.getElementById("loginMask");
+  var loginInput = document.getElementById("loginInput");
+  var loginBtn = document.getElementById("loginBtn");
+  var loginErr = document.getElementById("loginErr");
+
+  function authHeaders() {
+    var t = null;
+    try { t = localStorage.getItem("sl-token"); } catch (e) { /* ignore */ }
+    return t ? { "X-Access-Token": t } : {};
+  }
+  function showLogin() {
+    loginMask.hidden = false;
+    loginInput.value = "";
+    loginInput.focus();
+  }
+  function hideLogin() { loginMask.hidden = true; }
+
+  function apiFetch(url, opts) {
+    opts = opts || {};
+    opts.headers = Object.assign({}, opts.headers || {}, authHeaders());
+    return fetch(url, opts).then(function (r) {
+      if (r.status === 401) {
+        try { localStorage.removeItem("sl-token"); } catch (e) { /* ignore */ }
+        showLogin();
+        throw new Error("unauthorized");
+      }
+      return r;
+    });
+  }
+
+  function doLogin() {
+    var pw = loginInput.value;
+    loginErr.textContent = "";
+    loginBtn.disabled = true;
+    fetch("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: pw })
+    })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error("bad password")); })
+      .then(function (d) {
+        try { localStorage.setItem("sl-token", d.token); } catch (e) { /* ignore */ }
+        hideLogin();
+        refreshSettingsState();
+        inputEl.focus();
+      })
+      .catch(function () { loginErr.textContent = "密码不正确"; })
+      .finally(function () { loginBtn.disabled = false; });
+  }
+  loginBtn.onclick = doLogin;
+  loginInput.addEventListener("keydown", function (e) { if (e.key === "Enter") doLogin(); });
+
+  // 启动：携带已有 token 验证；无效则显示登录门
+  apiFetch("/api/settings")
+    .then(function (r) { return r.json(); })
+    .then(function () { hideLogin(); })
+    .catch(function () { /* 401 已触发登录门；网络失败也回到登录门 */ });
+
   // ---------- mini markdown（标题/粗体/行内码/代码块/列表/换行） ----------
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, function (c) {
@@ -263,7 +322,7 @@
   }
 
   function streamChat(payload, holder, onResult) {
-    return fetch("/api/chat/stream", {
+    return apiFetch("/api/chat/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
@@ -426,7 +485,7 @@
     var fd = new FormData();
     fd.append("file", f);
     var previewUrl = f.type && f.type.startsWith("image/") ? URL.createObjectURL(f) : null;
-    fetch("/api/upload", { method: "POST", body: fd })
+    apiFetch("/api/upload", { method: "POST", body: fd })
       .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status)); })
       .then(function (d) {
         d.url = previewUrl;
@@ -532,13 +591,17 @@
   var cfgSave = document.getElementById("cfgSave");
   var cfgClose = document.getElementById("cfgClose");
   var llmBadge = document.getElementById("llmBadge");
+  var cfgPw = document.getElementById("cfgPw");
 
   function refreshSettingsState() {
-    fetch("/api/settings").then(function (r) { return r.json(); }).then(function (s) {
+    apiFetch("/api/settings").then(function (r) { return r.json(); }).then(function (s) {
       llmBadge.textContent = s.configured ? "已配置" : "未配置";
       llmBadge.classList.toggle("on", !!s.configured);
       if (s.base_url) cfgBase.placeholder = s.base_url;
       if (s.model) cfgModel.placeholder = s.model;
+    }).catch(function () { /* ignore */ });
+    apiFetch("/api/access").then(function (r) { return r.json(); }).then(function (a) {
+      if (cfgPw) cfgPw.textContent = a.password || "—";
     }).catch(function () { /* ignore */ });
   }
   refreshSettingsState();
@@ -557,7 +620,7 @@
   cfgSave.onclick = function () {
     cfgSave.disabled = true;
     cfgSave.textContent = "保存中…";
-    fetch("/api/settings", {
+    apiFetch("/api/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -569,8 +632,7 @@
       .then(function (r) {
         if (!r.ok) throw new Error("save failed");
         return r.json();
-      })
-      .then(function (s) {
+      })      .then(function (s) {
         llmBadge.textContent = s.configured ? "已配置" : "未配置";
         llmBadge.classList.toggle("on", !!s.configured);
         cfgKey.value = "";
