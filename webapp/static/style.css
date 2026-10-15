@@ -240,3 +240,84 @@ body {
   .brand-sub { display: none; }
   .msg.bot .bubble { max-width: 100%; min-width: 80%; }
 }
+
+/* ---- 顶栏操作 ---- */
+.topbar-actions { display: flex; align-items: center; gap: 8px; }
+.icon-btn {
+  width: 32px; height: 32px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  border-radius: 8px;
+  font-size: 15px;
+  color: var(--ink-soft);
+  cursor: pointer;
+  line-height: 1;
+}
+.icon-btn:hover { color: var(--accent); border-color: var(--accent); }
+
+/* ---- 设置弹窗 ---- */
+.modal-mask {
+  position: fixed; inset: 0;
+  background: rgba(15, 23, 32, 0.45);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 50;
+}
+.modal-mask[hidden] { display: none; }
+.modal {
+  width: min(92vw, 420px);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 20px 22px;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.18);
+}
+.modal-title { font-size: 16px; font-weight: 700; margin-bottom: 6px; }
+.modal-badge {
+  font-size: 11px; font-weight: 600;
+  border-radius: 6px; padding: 2px 8px; margin-left: 8px;
+  background: #fee2e2; color: #b91c1c;
+}
+.modal-badge.on { background: #d1fae5; color: #047857; }
+.modal-hint { font-size: 12px; color: var(--ink-soft); line-height: 1.6; margin-bottom: 14px; }
+.field { display: block; margin-bottom: 12px; }
+.field span { display: block; font-size: 12px; color: var(--ink-soft); margin-bottom: 4px; }
+.field input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-size: 13px;
+  font-family: inherit;
+  background: var(--bg);
+  color: var(--ink);
+  outline: none;
+}
+.field input:focus { border-color: var(--accent); }
+.modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 4px; }
+.ghost-btn {
+  border: 1px solid var(--border);
+  background: var(--card);
+  border-radius: 8px;
+  padding: 9px 18px;
+  font-size: 13px;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+.ghost-btn:hover { color: var(--ink); }
+
+/* ---- 深色主题 ---- */
+body[data-theme="dark"] {
+  --bg: #0e1319;
+  --card: #171e26;
+  --ink: #e6e9ec;
+  --ink-soft: #8b98a5;
+  --accent: #2dd4bf;
+  --accent-soft: #103a37;
+  --border: #26303b;
+  --code-bg: #10161d;
+}
+body[data-theme="dark"] .msg.user .bubble { background: #0f766e; color: #ecfdf5; }
+body[data-theme="dark"] .bubble code { background: var(--accent-soft); color: #99f6e4; }
+body[data-theme="dark"] .field input { color-scheme: dark; }
+body[data-theme="dark"] .modal-badge { background: #3b1d1d; color: #fca5a5; }
+body[data-theme="dark"] .modal-badge.on { background: #103a37; color: #6ee7b7; }

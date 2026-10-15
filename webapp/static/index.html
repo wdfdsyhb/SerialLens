@@ -14,7 +14,11 @@
       <span class="brand-name">SerialLens</span>
       <span class="brand-sub">AI 串口侦探 · 智能体</span>
     </div>
-    <span class="status-dot" id="statusDot" title="服务状态"></span>
+    <div class="topbar-actions">
+      <button class="icon-btn" id="themeBtn" title="切换主题">◐</button>
+      <button class="icon-btn" id="settingsBtn" title="AI 设置">⚙</button>
+      <span class="status-dot" id="statusDot" title="服务状态"></span>
+    </div>
   </header>
 
   <main class="chat" id="chat">
@@ -38,6 +42,32 @@
     <textarea id="input" rows="1" placeholder="描述你的串口问题…" maxlength="500"></textarea>
     <button id="send" class="send" title="发送">发送</button>
   </footer>
+
+  <div class="modal-mask" id="settingsModal" hidden>
+    <div class="modal">
+      <div class="modal-title">AI 设置 <span class="modal-badge" id="llmBadge">未配置</span></div>
+      <div class="modal-hint">
+        未配置时回复为内置模板；配置后由大模型生成真实对话（OpenAI 兼容接口，
+        如 DeepSeek）。密钥仅存于服务内存，不落盘。
+      </div>
+      <label class="field">
+        <span>API Base URL</span>
+        <input id="cfgBase" placeholder="https://api.deepseek.com" autocomplete="off">
+      </label>
+      <label class="field">
+        <span>API Key</span>
+        <input id="cfgKey" type="password" placeholder="sk-..." autocomplete="off">
+      </label>
+      <label class="field">
+        <span>模型名</span>
+        <input id="cfgModel" placeholder="deepseek-chat" autocomplete="off">
+      </label>
+      <div class="modal-actions">
+        <button class="ghost-btn" id="cfgClose">取消</button>
+        <button class="send" id="cfgSave">保存</button>
+      </div>
+    </div>
+  </div>
 </div>
 <script src="/static/app.js"></script>
 </body>

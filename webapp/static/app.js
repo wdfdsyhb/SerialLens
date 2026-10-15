@@ -260,5 +260,79 @@
     if (r.ok) statusDot.classList.add("online");
   }).catch(function () { /* 离线保持灰色 */ });
 
+  // ---------- 主题切换（localStorage 记忆） ----------
+  var themeBtn = document.getElementById("themeBtn");
+
+  function applyTheme(theme) {
+    document.body.dataset.theme = theme;
+    try { localStorage.setItem("sl-theme", theme); } catch (e) { /* 隐私模式忽略 */ }
+  }
+  var savedTheme = null;
+  try { savedTheme = localStorage.getItem("sl-theme"); } catch (e) { /* ignore */ }
+  if (savedTheme === "dark" || savedTheme === "light") applyTheme(savedTheme);
+  themeBtn.onclick = function () {
+    applyTheme(document.body.dataset.theme === "dark" ? "light" : "dark");
+  };
+
+  // ---------- AI 设置弹窗 ----------
+  var settingsBtn = document.getElementById("settingsBtn");
+  var modal = document.getElementById("settingsModal");
+  var cfgBase = document.getElementById("cfgBase");
+  var cfgKey = document.getElementById("cfgKey");
+  var cfgModel = document.getElementById("cfgModel");
+  var cfgSave = document.getElementById("cfgSave");
+  var cfgClose = document.getElementById("cfgClose");
+  var llmBadge = document.getElementById("llmBadge");
+
+  function refreshSettingsState() {
+    fetch("/api/settings").then(function (r) { return r.json(); }).then(function (s) {
+      llmBadge.textContent = s.configured ? "已配置" : "未配置";
+      llmBadge.classList.toggle("on", !!s.configured);
+      if (s.base_url) cfgBase.placeholder = s.base_url;
+      if (s.model) cfgModel.placeholder = s.model;
+    }).catch(function () { /* ignore */ });
+  }
+  refreshSettingsState();
+
+  settingsBtn.onclick = function () {
+    cfgKey.value = "";
+    refreshSettingsState();
+    modal.hidden = false;
+    cfgBase.focus();
+  };
+  cfgClose.onclick = function () { modal.hidden = true; };
+  modal.addEventListener("click", function (e) {
+    if (e.target === modal) modal.hidden = true;
+  });
+
+  cfgSave.onclick = function () {
+    cfgSave.disabled = true;
+    cfgSave.textContent = "保存中…";
+    fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        base_url: cfgBase.value.trim(),
+        api_key: cfgKey.value.trim(),
+        model: cfgModel.value.trim(),
+      })
+    })
+      .then(function (r) {
+        if (!r.ok) throw new Error("save failed");
+        return r.json();
+      })
+      .then(function (s) {
+        llmBadge.textContent = s.configured ? "已配置" : "未配置";
+        llmBadge.classList.toggle("on", !!s.configured);
+        cfgKey.value = "";
+        modal.hidden = true;
+      })
+      .catch(function () { alert("保存失败：请检查 API Key 是否填写"); })
+      .finally(function () {
+        cfgSave.disabled = false;
+        cfgSave.textContent = "保存";
+      });
+  };
+
   inputEl.focus();
 })();
