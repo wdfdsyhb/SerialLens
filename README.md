@@ -1,5 +1,7 @@
 # SerialLens · AI 串口侦探
 
+[![CI](https://github.com/wdfdsyhb/SerialLens/actions/workflows/tests.yml/badge.svg)](https://github.com/wdfdsyhb/SerialLens/actions/workflows/tests.yml)
+
 > 传统串口助手只「显示」数据，SerialLens 会「看懂」数据。
 
 SerialLens 是一个给嵌入式学生和硬件工程师的串口调试助手：
