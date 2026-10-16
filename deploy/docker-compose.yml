@@ -1,0 +1,11 @@
+services:
+  web:
+    build:
+      context: ..
+    ports:
+      - "8300:8300"
+    env_file:
+      - ../.env          # 仓库根目录 .env 写入 SERIALLENS_ACCESS_PASSWORD=...
+    environment:
+      - PYTHONUTF8=1
+    restart: always
