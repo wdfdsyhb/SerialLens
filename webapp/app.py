@@ -47,7 +47,7 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 MAX_UPLOAD = 5 * 1024 * 1024
 
-# 运行时 LLM 配置（页面内设置；仅存内存，key 永不落盘、永不回显）
+# 运行时 LLM 配置（页面内设置；重启从 .env.local 恢复，key 永不回显）
 _RUNTIME_CFG: dict = {}
 # 已上传文件（内存态：file_id → {name, kind, mime, raw}）
 _FILES: dict = {}
@@ -57,17 +57,44 @@ _HISTORY_LIMIT = 10
 
 # 访问门禁：密码优先级 = 环境变量 > webapp/.env.local（本地文件，不入库） > 自动生成
 _ENV_LOCAL = Path(__file__).parent / ".env.local"
+# LLM 运行时配置的持久化副本（与密码同目录，同样不入库）
+_LLM_LOCAL = Path(__file__).parent / ".llm.local"
+
+# 密码强度下限：太弱的密码在 0.0.0.0 绑定下等于没有门禁。
+_MIN_PASSWORD_LEN = 8
+# 绑定地址：默认只听本机；确需局域网演示时显式设 SERIALLENS_BIND_HOST=0.0.0.0
+_DEFAULT_BIND_HOST = "127.0.0.1"
+
+
+def _password_weak(pw: str) -> bool:
+    """弱密码判定：长度不足，或只用单一字符类（纯字母/纯数字/纯符号）."""
+    if len(pw) < _MIN_PASSWORD_LEN:
+        return True
+    classes = sum(
+        bool(pred(pw)) for pred in (
+            lambda s: any(c.islower() for c in s),
+            lambda s: any(c.isupper() for c in s),
+            lambda s: any(c.isdigit() for c in s),
+            lambda s: any(not c.isalnum() for c in s),
+        )
+    )
+    return classes < 2
 
 
 def _load_password() -> str:
     env_pw = os.environ.get("SERIALLENS_ACCESS_PASSWORD")
     if env_pw:
+        if _password_weak(env_pw):
+            log.warning(
+                "SERIALLENS_ACCESS_PASSWORD 偏弱（需 ≥%d 位且至少两类字符），"
+                "若绑定到 0.0.0.0 请换成强密码", _MIN_PASSWORD_LEN,
+            )
         return env_pw
     if _ENV_LOCAL.exists():
         val = _ENV_LOCAL.read_text(encoding="utf-8").strip()
         if val:
             return val
-    return secrets.token_urlsafe(6)
+    return secrets.token_urlsafe(12)
 
 
 _ACCESS_PASSWORD: str = _load_password()
@@ -189,6 +216,38 @@ def _runtime_llm() -> LLMConfig:
 
 def _runtime_llm_available() -> bool:
     return _runtime_llm().available
+
+
+def _load_llm_local() -> dict:
+    """从 .llm.local 恢复上次保存的 LLM 配置；文件缺失或损坏时返回空 dict.
+
+    只用于本机演示的便利性：重启服务后不必重填 key。文件已在 .gitignore 中。
+    """
+    if not _LLM_LOCAL.exists():
+        return {}
+    try:
+        data = json.loads(_LLM_LOCAL.read_text(encoding="utf-8"))
+    except Exception:
+        log.warning("读取 %s 失败，忽略已保存的 LLM 配置", _LLM_LOCAL, exc_info=True)
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: data[k] for k in ("api_key", "base_url", "model") if isinstance(data.get(k), str)}
+
+
+def _save_llm_local(cfg: dict) -> None:
+    """把 LLM 配置写入 .llm.local（仅本机、0600 权限）。写失败不影响当前进程使用."""
+    try:
+        _LLM_LOCAL.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+        try:
+            os.chmod(_LLM_LOCAL, 0o600)  # Windows 上是近似语义，POSIX 下才是真权限
+        except OSError:
+            pass
+    except Exception:
+        log.warning("写入 %s 失败，配置只在本次运行内有效", _LLM_LOCAL, exc_info=True)
+
+
+_RUNTIME_CFG.update(_load_llm_local())
 
 
 def _llm_chat_completion(cfg: LLMConfig, system: str, user: str, images: list[bytes] | None = None,
@@ -561,6 +620,8 @@ def save_settings(req: SettingsRequest) -> dict:
         _RUNTIME_CFG["base_url"] = req.base_url
     if req.model:
         _RUNTIME_CFG["model"] = req.model
+    # 落盘一份，重启后无需重填；失败只降级为「本次运行有效」，不影响请求成功
+    _save_llm_local({k: _RUNTIME_CFG[k] for k in ("api_key", "base_url", "model") if _RUNTIME_CFG.get(k)})
     return {
         "configured": _runtime_llm_available(),
         "base_url": _RUNTIME_CFG.get("base_url") or "",
@@ -592,10 +653,17 @@ def _render_export(sid: str) -> str | None:
                 parts += ["### 排查步骤", ""] + [f"- {s}" for s in steps] + [""]
             data = result.get("data") or {}
             if data:
+                # 结构性字段单独排版，其余标量键通用输出——避免引擎新增字段被静默丢掉
+                _STRUCT = {"hexdump", "fields", "c_header", "c_source"}
                 parts += ["### 引擎数据", ""]
-                for k in ("frames_count", "frame_len", "header", "length_rule", "heuristic"):
-                    if k in data:
-                        parts.append(f"- **{k}**：{data[k]}")
+                for k, v in data.items():
+                    if k in _STRUCT or v in (None, "", [], {}):
+                        continue
+                    if isinstance(v, (dict, list)):
+                        parts.append(f"- **{k}**：`{json.dumps(v, ensure_ascii=False)}`")
+                    else:
+                        parts.append(f"- **{k}**：{v}")
+                parts.append("")
                 if data.get("hexdump"):
                     parts += ["", "```", str(data["hexdump"]), "```", ""]
                 fields = data.get("fields")

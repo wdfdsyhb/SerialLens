@@ -12,5 +12,6 @@ seriallens-report-*.md
 Thumbs.db
 webapp/.profiles/
 webapp/.env.local
+webapp/.llm.local
 webapp/sessions.db*
 .env
