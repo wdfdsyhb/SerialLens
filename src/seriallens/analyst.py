@@ -13,17 +13,42 @@ import os
 import httpx
 
 # 某些环境的 NO_PROXY 含 "[::1]"（带方括号的 IPv6），httpx 会把它当端口解析并抛
-# InvalidURL: Invalid port: ':1]'，导致所有请求失败。这里只剔除这一种非法写法，
-# 保留其余代理配置（GFW 环境下外网仍需代理）。
+# InvalidURL: Invalid port: ':1]'，导致所有请求失败。
+#
+# 修复方式：不修改 os.environ（那是进程级全局副作用，会影响调用方自己的代码），
+# 改为在建立 client 时显式决定是否沿用环境代理。
 _NO_PROXY_SAFE = "localhost,127.0.0.1,::1"
 
 
-def _sanitize_no_proxy() -> None:
-    for var in ("NO_PROXY", "no_proxy"):
-        raw = os.environ.get(var)
-        if raw and "[::1]" in raw:
-            parts = [p.strip() for p in raw.split(",") if p.strip() and p.strip() != "[::1]"]
-            os.environ[var] = ",".join(parts) or _NO_PROXY_SAFE
+def _no_proxy_is_poisoned() -> bool:
+    """环境里的 NO_PROXY 是否含 httpx 无法解析的 "[::1]" 写法."""
+    return any("[::1]" in (os.environ.get(v) or "") for v in ("NO_PROXY", "no_proxy"))
+
+
+def _cleaned_no_proxy() -> str:
+    """返回剔除 "[::1]" 后的 NO_PROXY 值；其余条目保留（外网仍需代理）."""
+    raw = os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or ""
+    parts = [p.strip() for p in raw.split(",") if p.strip() and p.strip() != "[::1]"]
+    return ",".join(parts) or _NO_PROXY_SAFE
+
+
+def _make_client(timeout: float) -> httpx.Client:
+    """构造 httpx.Client：仅在 NO_PROXY 中毒时绕开环境，正常环境保持默认行为.
+
+    绕开的方式是 trust_env=False + 显式传代理，既避开非法条目，
+    又不改动进程环境变量（os.environ 是全局副作用，会影响调用方代码）。
+    """
+    if not _no_proxy_is_poisoned():
+        return httpx.Client(timeout=timeout)
+    proxy = (os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+             or os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy"))
+    return httpx.Client(timeout=timeout, trust_env=False, proxy=proxy)
+
+
+# 兼容旧名：外部（webapp）曾直接调用，保留为无副作用的探测函数
+def _sanitize_no_proxy() -> None:  # pragma: no cover - 向后兼容垫片
+    """已废弃：不再修改 os.environ。保留仅为兼容旧调用点."""
+    return None
 
 SYSTEM_PROMPT = """\
 你是一名嵌入式串口协议分析专家。用户会给你一段串口采样（HEX 与文本两种视图）、
@@ -82,8 +107,7 @@ def analyze(prompt: str, cfg: LLMConfig, timeout: float = 60.0) -> str:
         "max_tokens": 1200,
     }
     headers = {"Authorization": f"Bearer {cfg.api_key}"}
-    _sanitize_no_proxy()
-    with httpx.Client(timeout=timeout) as client:
+    with _make_client(timeout) as client:
         resp = client.post(url, json=payload, headers=headers)
         resp.raise_for_status()
         data = resp.json()

@@ -5,75 +5,95 @@
 抛出 `InvalidURL: Invalid port: ':1]'`。该异常被调用方的
 `except Exception` 静默吞掉，表现为「配了 AI 却永远返回模板回复」。
 
-修复：analyst._sanitize_no_proxy() 只剔除这一种非法写法，其余代理配置保留。
+修复演进：
+- v1（已废弃）：修改 os.environ 剔除非法项 —— 进程级全局副作用
+- v2（当前）：_make_client() 在检测到中毒时用 trust_env=False + 显式 proxy 建 client，
+  不动 os.environ
 """
 
 from __future__ import annotations
 
 import os
 
+import httpx
 import pytest
 
-from seriallens.analyst import _sanitize_no_proxy
+from seriallens.analyst import _cleaned_no_proxy, _make_client, _no_proxy_is_poisoned
 
 BAD = "localhost,127.0.0.1,::1,[::1]"
+CLEAN = "localhost,127.0.0.1,::1"
 
 
 @pytest.fixture()
-def restore_env():
-    """测试后恢复 NO_PROXY/no_proxy，避免污染其他用例."""
-    saved = {k: os.environ.get(k) for k in ("NO_PROXY", "no_proxy")}
-    yield
-    for k, v in saved.items():
-        if v is None:
-            os.environ.pop(k, None)
-        else:
-            os.environ[k] = v
+def env(monkeypatch):
+    """把代理相关环境变量隔离到测试内，避免污染其他用例."""
+
+    def _set(**kwargs):
+        for k, v in kwargs.items():
+            if v is None:
+                monkeypatch.delenv(k, raising=False)
+            else:
+                monkeypatch.setenv(k, v)
+
+    return _set
 
 
-class TestSanitizeNoProxy:
-    def test_removes_bracketed_ipv6(self, restore_env):
-        os.environ["NO_PROXY"] = BAD
-        os.environ["no_proxy"] = BAD
-        _sanitize_no_proxy()
-        for var in ("NO_PROXY", "no_proxy"):
-            value = os.environ[var]
-            assert "[::1]" not in value, f"{var} 仍含非法写法 [::1]"
-            # 其余条目必须保留：外网访问依赖代理配置
-            assert "localhost" in value
-            assert "127.0.0.1" in value
-            assert "::1" in value
+class TestDetection:
+    def test_detects_bracketed_ipv6(self, env):
+        env(NO_PROXY=BAD, no_proxy=BAD)
+        assert _no_proxy_is_poisoned() is True
 
-    def test_noop_when_absent(self, restore_env):
-        os.environ.pop("NO_PROXY", None)
-        os.environ.pop("no_proxy", None)
-        _sanitize_no_proxy()  # 不应抛异常，也不应凭空创建变量
-        assert os.environ.get("NO_PROXY") is None
-        assert os.environ.get("no_proxy") is None
+    def test_clean_is_not_poisoned(self, env):
+        env(NO_PROXY=CLEAN, no_proxy=CLEAN)
+        assert _no_proxy_is_poisoned() is False
 
-    def test_noop_when_clean(self, restore_env):
-        clean = "localhost,127.0.0.1,::1"
-        os.environ["NO_PROXY"] = clean
-        os.environ["no_proxy"] = clean
-        _sanitize_no_proxy()
-        assert os.environ["NO_PROXY"] == clean
-        assert os.environ["no_proxy"] == clean
+    def test_absent_is_not_poisoned(self, env):
+        env(NO_PROXY=None, no_proxy=None)
+        assert _no_proxy_is_poisoned() is False
 
-    def test_only_bracketed_entry_falls_back(self, restore_env):
-        """极端情况：NO_PROXY 只有 "[::1]" 一项，清空后应回落到安全默认值."""
-        os.environ["NO_PROXY"] = "[::1]"
-        os.environ["no_proxy"] = "[::1]"
-        _sanitize_no_proxy()
-        for var in ("NO_PROXY", "no_proxy"):
-            assert os.environ[var].strip(), f"{var} 被清空，本地回环会走代理"
-            assert "[::1]" not in os.environ[var]
+    def test_lowercase_variant_detected(self, env):
+        """Windows 上 no_proxy 与 NO_PROXY 可能只有一个被设置."""
+        env(NO_PROXY=None, no_proxy=BAD)
+        assert _no_proxy_is_poisoned() is True
 
-    def test_httpx_actually_works_after_sanitize(self, restore_env):
-        """端到端：清洗后 httpx 不再抛 InvalidURL（不依赖任何外部服务）."""
-        httpx = pytest.importorskip("httpx")
-        os.environ["NO_PROXY"] = BAD
-        os.environ["no_proxy"] = BAD
-        _sanitize_no_proxy()
-        # 构造 client 就会读取代理配置；此前这一步之后的请求会因非法 URL 崩溃。
-        with httpx.Client(timeout=1.0) as client:
-            assert client is not None
+
+class TestCleanedValue:
+    def test_strips_only_bracketed(self, env):
+        env(NO_PROXY=BAD, no_proxy=None)
+        cleaned = _cleaned_no_proxy()
+        assert "[::1]" not in cleaned
+        # 其余条目必须保留：外网访问依赖代理配置
+        assert "localhost" in cleaned
+        assert "127.0.0.1" in cleaned
+        assert "::1" in cleaned
+
+    def test_only_bracketed_falls_back(self, env):
+        """极端情况：NO_PROXY 只有 "[::1]"，清空后回落到安全默认值."""
+        env(NO_PROXY="[::1]", no_proxy=None)
+        cleaned = _cleaned_no_proxy()
+        assert cleaned.strip()
+        assert "[::1]" not in cleaned
+
+
+class TestMakeClient:
+    def test_clean_env_keeps_default_behavior(self, env):
+        env(NO_PROXY=CLEAN, no_proxy=CLEAN)
+        with _make_client(1.0) as client:
+            # 未中毒时不加 trust_env=False，保留调用方环境
+            assert client.trust_env is True
+
+    def test_poisoned_env_does_not_mutate_os_environ(self, env):
+        """关键回归：修复不得改动进程环境变量（v1 的问题）."""
+        env(NO_PROXY=BAD, no_proxy=BAD)
+        before = (os.environ.get("NO_PROXY"), os.environ.get("no_proxy"))
+        with _make_client(1.0) as client:
+            assert client.trust_env is False
+        after = (os.environ.get("NO_PROXY"), os.environ.get("no_proxy"))
+        assert before == after, "os.environ 被修改了，存在全局副作用"
+
+    def test_poisoned_env_builds_usable_client(self, env):
+        """端到端：中毒环境下 client 能正常构造（此前会在请求阶段崩）."""
+        env(NO_PROXY=BAD, no_proxy=BAD)
+        with _make_client(1.0) as client:
+            assert isinstance(client, httpx.Client)
+            assert client.trust_env is False

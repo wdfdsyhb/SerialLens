@@ -19,24 +19,28 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import secrets
 import time
 import uuid
 from pathlib import Path
 
-import httpx
 from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from seriallens.analyst import LLMConfig, _sanitize_no_proxy
+from seriallens.analyst import LLMConfig, _make_client
 from seriallens.export import hexdump_of
 from webapp.engine import _text_view, _view, route_intent, run_scenario
 from webapp.store import Store
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+# 降级路径一律记日志：静默吞异常曾让「AI 配置了却永远返回模板」这类故障
+# 完全不可见（NO_PROXY 的 InvalidURL 就是这么被藏住的）。
+log = logging.getLogger("seriallens.webapp")
 
 app = FastAPI(title="SerialLens Agent", docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -191,8 +195,7 @@ def _llm_chat_completion(cfg: LLMConfig, system: str, user: str, images: list[by
                          mime: str = "image/png", timeout: float = 30.0,
                          history: list[dict] | None = None) -> str:
     """统一 LLM 调用入口（OpenAI 兼容 /chat/completions，支持视觉与多轮历史）。异常向上抛，由调用方降级."""
-    _sanitize_no_proxy()
-    with httpx.Client(timeout=timeout) as client:
+    with _make_client(timeout) as client:
         resp = client.post(
             f"{cfg.base_url}/chat/completions",
             headers={"Authorization": f"Bearer {cfg.api_key}"},
@@ -210,8 +213,7 @@ def _llm_chat_completion(cfg: LLMConfig, system: str, user: str, images: list[by
 def _llm_stream_completion(cfg: LLMConfig, system: str, messages: list[dict], timeout: float = 40.0):
     """流式 LLM 调用：messages 为 [{role, content}]（不含 system），逐块 yield 文本增量。异常向上抛."""
     full = [{"role": "system", "content": system}] + list(messages)
-    _sanitize_no_proxy()
-    with httpx.Client(timeout=timeout) as client:
+    with _make_client(timeout) as client:
         with client.stream(
             "POST",
             f"{cfg.base_url}/chat/completions",
@@ -254,7 +256,9 @@ def _llm_polish(message: str, result: dict) -> str | None:
             f"用户提问：{message}\n\n引擎结果：{json.dumps(brief, ensure_ascii=False)}",
         )
     except Exception:
-        return None  # 演示稳定性优先：LLM 任何故障都降级到状态说明
+        # 降级到引擎状态说明，但必须留下痕迹，否则「配了 AI 却永远返回模板」无法排查
+        log.warning("LLM 精修失败，降级为引擎摘要", exc_info=True)
+        return None
 
 
 # ---------------------------------------------------------------- 文件处理
@@ -353,7 +357,7 @@ def chat(req: ChatRequest) -> dict:
                 _append_history(req.session_id, "assistant", reply)
                 return _result("analyze", "文件数据分析", reply, llm=True, data={"hexdump": hexdump_of(first["raw"][:128]) if first["kind"] != "text" else ""})
             except Exception:
-                pass  # 降级：引擎数据视图
+                log.warning("上传文件 LLM 分析失败，降级为引擎数据视图", exc_info=True)  # 降级：引擎数据视图
         view = _view(first["raw"]) if first["kind"] != "image" else {"hexdump": "", "text_view": "", "heuristic": "图片文件：在 ⚙ 配置支持视觉的模型后可分析"}
         return _result(
             "analyze", "文件数据分析",
@@ -383,7 +387,7 @@ def chat(req: ChatRequest) -> dict:
             _append_history(req.session_id, "assistant", reply)
             return _result(scenario or "assist", "对话", reply, llm=True, data={})
         except Exception:
-            pass
+            log.warning("自由对话 LLM 调用失败，降级为场景引擎", exc_info=True)
     if scenario != "assist":
         return _result(
             scenario, "等待数据",
@@ -438,7 +442,7 @@ def chat_stream(req: ChatRequest):
                     yield _sse("done", {})
                     return
                 except Exception:
-                    pass
+                    log.warning("流式 LLM 分析失败，降级为数据视图", exc_info=True)
             fallback = "引擎已生成数据视图（见下）。在右上角 ⚙ 配置 AI 后可获得对话式分析。"
             view = _view(first["raw"]) if first["kind"] != "image" else {"hexdump": "", "text_view": "", "heuristic": "图片文件：在 ⚙ 配置支持视觉的模型后可分析"}
             yield _sse("delta", {"text": fallback})
