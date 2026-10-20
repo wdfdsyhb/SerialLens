@@ -31,7 +31,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from seriallens.analyst import LLMConfig
+from seriallens.analyst import LLMConfig, _sanitize_no_proxy
 from seriallens.export import hexdump_of
 from webapp.engine import _text_view, _view, route_intent, run_scenario
 from webapp.store import Store
@@ -191,6 +191,7 @@ def _llm_chat_completion(cfg: LLMConfig, system: str, user: str, images: list[by
                          mime: str = "image/png", timeout: float = 30.0,
                          history: list[dict] | None = None) -> str:
     """统一 LLM 调用入口（OpenAI 兼容 /chat/completions，支持视觉与多轮历史）。异常向上抛，由调用方降级."""
+    _sanitize_no_proxy()
     with httpx.Client(timeout=timeout) as client:
         resp = client.post(
             f"{cfg.base_url}/chat/completions",
@@ -209,6 +210,7 @@ def _llm_chat_completion(cfg: LLMConfig, system: str, user: str, images: list[by
 def _llm_stream_completion(cfg: LLMConfig, system: str, messages: list[dict], timeout: float = 40.0):
     """流式 LLM 调用：messages 为 [{role, content}]（不含 system），逐块 yield 文本增量。异常向上抛."""
     full = [{"role": "system", "content": system}] + list(messages)
+    _sanitize_no_proxy()
     with httpx.Client(timeout=timeout) as client:
         with client.stream(
             "POST",

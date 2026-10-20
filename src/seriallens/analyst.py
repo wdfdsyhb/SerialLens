@@ -12,6 +12,19 @@ import os
 
 import httpx
 
+# 某些环境的 NO_PROXY 含 "[::1]"（带方括号的 IPv6），httpx 会把它当端口解析并抛
+# InvalidURL: Invalid port: ':1]'，导致所有请求失败。这里只剔除这一种非法写法，
+# 保留其余代理配置（GFW 环境下外网仍需代理）。
+_NO_PROXY_SAFE = "localhost,127.0.0.1,::1"
+
+
+def _sanitize_no_proxy() -> None:
+    for var in ("NO_PROXY", "no_proxy"):
+        raw = os.environ.get(var)
+        if raw and "[::1]" in raw:
+            parts = [p.strip() for p in raw.split(",") if p.strip() and p.strip() != "[::1]"]
+            os.environ[var] = ",".join(parts) or _NO_PROXY_SAFE
+
 SYSTEM_PROMPT = """\
 你是一名嵌入式串口协议分析专家。用户会给你一段串口采样（HEX 与文本两种视图）、
 基本的启发式识别结果、以及可能的波特率信息。请用简体中文、markdown、克制篇幅回答：
@@ -69,6 +82,7 @@ def analyze(prompt: str, cfg: LLMConfig, timeout: float = 60.0) -> str:
         "max_tokens": 1200,
     }
     headers = {"Authorization": f"Bearer {cfg.api_key}"}
+    _sanitize_no_proxy()
     with httpx.Client(timeout=timeout) as client:
         resp = client.post(url, json=payload, headers=headers)
         resp.raise_for_status()
