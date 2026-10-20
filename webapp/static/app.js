@@ -17,9 +17,12 @@
   var loginErr = document.getElementById("loginErr");
   var brandUser = document.getElementById("brandUser");
 
+  // 访问令牌存 sessionStorage：刷新页面仍保持登录，关闭标签页即失效。
+  // 不用 localStorage——令牌在那里会被任何 XSS 读到，且服务端令牌本就是内存态，
+  // 重启即失效，本地长期留存没有意义。用户名/主题等非敏感项仍用 localStorage。
   function authHeaders() {
     var t = null;
-    try { t = localStorage.getItem("sl-token"); } catch (e) { /* ignore */ }
+    try { t = sessionStorage.getItem("sl-token"); } catch (e) { /* ignore */ }
     return t ? { "X-Access-Token": t } : {};
   }
   function showLogin() {
@@ -42,7 +45,7 @@
     opts.headers = Object.assign({}, opts.headers || {}, authHeaders());
     return fetch(url, opts).then(function (r) {
       if (r.status === 401) {
-        try { localStorage.removeItem("sl-token"); } catch (e) { /* ignore */ }
+        try { sessionStorage.removeItem("sl-token"); } catch (e) { /* ignore */ }
         showLogin();
         throw new Error("unauthorized");
       }
@@ -62,7 +65,7 @@
       .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error("bad password")); })
       .then(function (d) {
         try {
-          localStorage.setItem("sl-token", d.token);
+          sessionStorage.setItem("sl-token", d.token);
           if (loginUser && loginUser.value.trim()) {
             localStorage.setItem("sl-user", loginUser.value.trim());
           }
