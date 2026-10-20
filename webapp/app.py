@@ -21,18 +21,20 @@ import base64
 import json
 import os
 import secrets
+import time
 import uuid
 from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from seriallens.analyst import LLMConfig
 from seriallens.export import hexdump_of
 from webapp.engine import _text_view, _view, route_intent, run_scenario
+from webapp.store import Store
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -68,6 +70,10 @@ _ACCESS_PASSWORD: str = _load_password()
 # 已签发的会话令牌（内存态）
 _TOKENS: set = set()
 _PUBLIC_API = {"/api/login", "/api/health"}
+
+# SQLite 会话持久化：重启后对话历史可恢复（库文件不入 git，见 .gitignore）
+_STORE = Store(Path(__file__).parent / "sessions.db")
+_SESSIONS.update(_STORE.load_all())
 
 if os.environ.get("SERIALLENS_ACCESS_PASSWORD") is None and not _ENV_LOCAL.exists():
     # 自动生成时打印一次，便于部署者记录并提交给评审
@@ -159,10 +165,12 @@ def _session_history(sid: str) -> list[dict]:
 def _append_history(sid: str, role: str, content: str) -> None:
     if not sid:
         return
-    _SESSIONS.setdefault(sid, []).append({"role": role, "content": content})
+    msg = {"role": role, "content": content}
+    _SESSIONS.setdefault(sid, []).append(msg)
     hist = _SESSIONS[sid]
     if len(hist) > _HISTORY_LIMIT * 3:      # 硬上限防内存膨胀
         del hist[: len(hist) - _HISTORY_LIMIT * 2]
+    _STORE.append(sid, msg)                 # 同步落库：重启可恢复
 
 
 def _runtime_llm() -> LLMConfig:
@@ -552,6 +560,68 @@ def save_settings(req: SettingsRequest) -> dict:
         "base_url": _RUNTIME_CFG.get("base_url") or "",
         "model": _RUNTIME_CFG.get("model") or "",
     }
+
+
+def _render_export(sid: str) -> str | None:
+    """把会话历史渲成 Markdown 报告；会话不存在返回 None."""
+    hist = _SESSIONS.get(sid)
+    if hist is None:
+        return None
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    if not hist:
+        return (
+            f"# SerialLens 导出 — {sid}\n\n"
+            f"- 导出时间：{ts}\n\n"
+            "## 暂无内容\n\n该会话尚无对话记录。\n"
+        )
+    parts = [f"# SerialLens 导出 — {sid}", "", f"- 导出时间：{ts}", f"- 消息数：{len(hist)}", ""]
+    for msg in hist:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        if role == "bot":
+            result = msg.get("result") or {}
+            parts += [f"## {result.get('title', '分析结果')}", "", result.get("reply", ""), ""]
+            steps = result.get("steps") or []
+            if steps:
+                parts += ["### 排查步骤", ""] + [f"- {s}" for s in steps] + [""]
+            data = result.get("data") or {}
+            if data:
+                parts += ["### 引擎数据", ""]
+                for k in ("frames_count", "frame_len", "header", "length_rule", "heuristic"):
+                    if k in data:
+                        parts.append(f"- **{k}**：{data[k]}")
+                if data.get("hexdump"):
+                    parts += ["", "```", str(data["hexdump"]), "```", ""]
+                fields = data.get("fields")
+                if fields:
+                    parts += ["### 字段表", "", "| 偏移 | 字段 | 类型 | 比例 |", "| --- | --- | --- | --- |"]
+                    for fld in fields:
+                        parts.append(
+                            f"| {fld.get('offset', '')} | {fld.get('name', '')} "
+                            f"| {fld.get('type', '')} | {fld.get('scale', '')} |"
+                        )
+                    parts.append("")
+                for key in ("c_header", "c_source"):
+                    if data.get(key):
+                        parts += [f"### {key}", "", "```c", str(data[key]), "```", ""]
+        else:
+            label = "用户" if role == "user" else "助手"
+            parts += [f"## {label}", "", content, ""]
+    parts += ["---", "*由 SerialLens 生成（AI 仅供辅助判断，以实测为准）*"]
+    return "\n".join(parts)
+
+
+@app.get("/api/export/{session_id}")
+def export_session(session_id: str):
+    """会话导出为 Markdown 报告（含引擎步骤/HEX/字段表/C 代码）."""
+    md = _render_export(session_id)
+    if md is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return Response(
+        content=md,
+        media_type="text/markdown",
+        headers={"Content-Disposition": f'attachment; filename="SerialLens_{session_id}.md"'},
+    )
 
 
 @app.get("/api/health")

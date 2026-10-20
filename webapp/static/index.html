@@ -22,6 +22,7 @@
         <span class="brand-mark">SL</span>
         <span class="brand-name">SerialLens</span>
         <span class="brand-sub">AI 串口侦探 · 智能体</span>
+        <span class="brand-user" id="brandUser" hidden></span>
       </div>
       <div class="topbar-actions">
         <button class="icon-btn" id="themeBtn" title="切换主题">◐</button>
@@ -63,7 +64,8 @@
     <div class="login-card">
       <span class="brand-mark login-mark">SL</span>
       <div class="login-title">SerialLens · AI 串口侦探</div>
-      <div class="login-sub">请输入访问密码</div>
+      <div class="login-sub">请输入用户名和访问密码</div>
+      <input type="text" id="loginUser" placeholder="用户名" autocomplete="username" value="wdfdsy">
       <input type="password" id="loginInput" placeholder="访问密码" autocomplete="current-password">
       <button id="loginBtn" class="send login-btn">进入</button>
       <div class="login-err" id="loginErr"></div>

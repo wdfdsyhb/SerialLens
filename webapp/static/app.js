@@ -12,8 +12,10 @@
   // ---------- 访问门禁 ----------
   var loginMask = document.getElementById("loginMask");
   var loginInput = document.getElementById("loginInput");
+  var loginUser = document.getElementById("loginUser");
   var loginBtn = document.getElementById("loginBtn");
   var loginErr = document.getElementById("loginErr");
+  var brandUser = document.getElementById("brandUser");
 
   function authHeaders() {
     var t = null;
@@ -26,6 +28,14 @@
     loginInput.focus();
   }
   function hideLogin() { loginMask.hidden = true; }
+  function showUserName() {
+    var u = null;
+    try { u = localStorage.getItem("sl-user"); } catch (e) { /* ignore */ }
+    if (u && brandUser) {
+      brandUser.textContent = "@" + u;
+      brandUser.hidden = false;
+    }
+  }
 
   function apiFetch(url, opts) {
     opts = opts || {};
@@ -51,8 +61,14 @@
     })
       .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error("bad password")); })
       .then(function (d) {
-        try { localStorage.setItem("sl-token", d.token); } catch (e) { /* ignore */ }
+        try {
+          localStorage.setItem("sl-token", d.token);
+          if (loginUser && loginUser.value.trim()) {
+            localStorage.setItem("sl-user", loginUser.value.trim());
+          }
+        } catch (e) { /* ignore */ }
         hideLogin();
+        showUserName();
         refreshSettingsState();
         inputEl.focus();
       })
@@ -63,6 +79,7 @@
   loginInput.addEventListener("keydown", function (e) { if (e.key === "Enter") doLogin(); });
 
   // 启动：携带已有 token 验证；无效则显示登录门
+  showUserName();
   apiFetch("/api/settings")
     .then(function (r) { return r.json(); })
     .then(function () { hideLogin(); })
@@ -402,6 +419,31 @@
       t.className = "session-title";
       t.textContent = s.title;
       item.appendChild(t);
+      var exp = document.createElement("button");
+      exp.className = "session-del session-export";
+      exp.textContent = "⤓";
+      exp.title = "导出为 Markdown 报告";
+      exp.onclick = function (e) {
+        e.stopPropagation();
+        apiFetch("/api/export/" + encodeURIComponent(s.id))
+          .then(function (r) {
+            if (!r.ok) throw new Error("HTTP " + r.status);
+            return r.text();
+          })
+          .then(function (md) {
+            var blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
+            var url = URL.createObjectURL(blob);
+            var a = document.createElement("a");
+            a.href = url;
+            a.download = "SerialLens_" + s.id + ".md";
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+          })
+          .catch(function () { alert("导出失败：该会话可能没有服务端记录（仅本地）"); });
+      };
+      item.appendChild(exp);
       var del = document.createElement("button");
       del.className = "session-del";
       del.textContent = "×";

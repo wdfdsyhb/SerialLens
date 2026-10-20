@@ -78,6 +78,7 @@ body {
 }
 .session-item:hover .session-del { opacity: .7; }
 .session-del:hover { color: #ef4444; opacity: 1; }
+.session-export:hover { color: var(--accent); opacity: 1; }
 .sidebar-foot {
   font-size: 11px; color: var(--ink-soft);
   padding: 10px 6px 2px; text-align: center;
@@ -114,6 +115,13 @@ body {
 }
 .brand-name { font-size: 17px; font-weight: 700; letter-spacing: .2px; }
 .brand-sub { font-size: 12px; color: var(--ink-soft); }
+.brand-user {
+  font-size: 12px; color: var(--accent);
+  padding: 2px 8px;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  white-space: nowrap;
+}
 .status-dot {
   width: 9px; height: 9px; border-radius: 50%;
   background: #d1d5db;
