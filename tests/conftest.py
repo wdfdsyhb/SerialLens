@@ -17,6 +17,7 @@ def _isolate_webapp_runtime(tmp_path, monkeypatch):
     try:
         import webapp.app as appmod
     except Exception:  # fastapi 未安装时跳过，相关用例本身会 importorskip
+        yield  # 生成器 fixture 不能直接 return，否则 pytest 报 did not yield a value
         return
 
     monkeypatch.setattr(appmod, "_LLM_LOCAL", tmp_path / ".llm.local", raising=False)
