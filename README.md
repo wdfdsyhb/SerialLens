@@ -190,6 +190,50 @@ seriallens export-c my-sensor --out firmware/
 接入后你可以直接对 agent 说：「用 serial__demo_frames 生成一段靶场数据，
 学习它的协议，然后告诉我温度字段在哪」——agent 全程自己调工具完成闭环。
 
+## Web 智能体（v0.5 新增）
+
+不想装 CLI？浏览器打开就能用。`webapp/` 是一个 FastAPI 对话壳，
+把引擎的确定性能力包装成聊天界面，答辩演示只需要一个链接 + 一个密码。
+
+```bash
+# Windows：双击 start_web.bat（或加 --no-pause 免按键）
+# 手动启动：
+pip install -e . fastapi "uvicorn[standard]"
+python -m uvicorn webapp.app:app --host 127.0.0.1 --port 8300
+```
+
+打开 `http://127.0.0.1:8300`，输入访问密码进入。密码来源按优先级：
+
+1. 环境变量 `SERIALLENS_ACCESS_PASSWORD`
+2. `webapp/.env.local`（本机密码文件，不进 git）
+3. 自动生成，启动时在控制台打印一次
+
+> 绑定 `0.0.0.0` 前务必设强密码（≥8 位且至少两类字符，弱密码只告警不拦截）。
+
+**架构叙事**：LLM 只做语言层，确定性计算在引擎。
+
+```text
+前端 → /api/chat → 意图路由 → 引擎场景（确定性） → LLM（可选，失败降级模板）
+```
+
+**主要接口**
+
+| 端点 | 作用 |
+| --- | --- |
+| `POST /api/login` | 密码换访问令牌（令牌存 sessionStorage） |
+| `POST /api/chat`、`/api/chat/stream` | 对话 / SSE 流式回复（打字机效果） |
+| `POST /api/upload` | 上传串口抓包（.bin / HEX / hexdump） |
+| `GET/POST /api/settings` | 页面内配置 LLM（存 `webapp/.llm.local`，本机 0600） |
+| `GET /api/export/{session_id}` | 会话导出 Markdown |
+| `GET /api/health` | 健康检查（无需登录） |
+
+**内置场景**（无硬件可用）：`diagnose` 波特率诊断、`analyze` 数据分析、
+`codegen` 生成 C 解析器、`assist` 协议答疑。
+
+会话历史存 SQLite（`webapp/sessions.db`，不入 git），重启后对话可恢复。
+
+部署到公网给评审访问见 [DEPLOY.md](DEPLOY.md)。
+
 ## 配置 AI 分析
 
 任何 OpenAI 兼容接口都可以（DeepSeek / GLM / OpenRouter / 本地 vLLM …），
@@ -228,8 +272,29 @@ SerialLens 是 **Lens 系列**的一员——同一套理念：面对未知硬�
 - [x] v0.2 协议学习模式：多轮采样对比，自动推断字段含义并生成解码画像
 - [x] v0.3 MCP server：9 个工具接入 ZCode / Claude Desktop，无硬件全流程可用
 - [x] v0.4 文件回放（.bin / HEX / hexdump）+ 协议画像 → C 解析器代码生成
-- [ ] v0.4.x agent skill 形态、Python 目标代码生成
-- [ ] v0.5 TUI 实时解码视图、Modbus RTU 配对、ESP32 无线串口网关
+- [x] v0.5 Web 智能体：密码门禁、多轮对话、SSE 流式、会话持久化、公网部署脚本
+- [ ] v0.5.x agent skill 形态、Python 目标代码生成
+- [ ] v0.6 TUI 实时解码视图、Modbus RTU 配对、ESP32 无线串口网关
+
+## 项目结构
+
+```text
+src/seriallens/      CLI 与核心引擎（无 web 依赖）
+  mcp_server.py      MCP server：9 个工具，stdio 传输
+  analyst.py         LLM 调用（OpenAI 兼容）
+  learn.py           协议画像推断
+  codegen.py         画像 → C 解析器
+webapp/              FastAPI 对话壳（依赖 fastapi/uvicorn）
+  app.py             路由、密码门禁、SSE
+  engine.py          确定性场景引擎（不依赖 LLM）
+  store.py           SQLite 会话持久化
+  static/            前端（原生 JS，无构建步骤）
+deploy/              裸机 run.sh、Dockerfile、compose
+tests/               137 passed
+```
+
+核心引擎不导入 fastapi —— web 只是可选的第二层外壳，
+`pip install -e .` 之后 CLI 和 MCP 都能单独用。
 
 ## 适合谁
 
