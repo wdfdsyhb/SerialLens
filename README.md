@@ -305,3 +305,9 @@ tests/               137 passed
 ## License
 
 MIT
+
+---
+
+## English
+
+Full English documentation: [README_EN.md](README_EN.md)
