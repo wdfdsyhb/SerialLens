@@ -94,3 +94,32 @@ class TestRegistrySmoke:
                     "serial__detect_baud", "serial__capture", "serial__learn",
                     "serial__decode", "serial__profiles", "serial__server_info"}
         assert expected.issubset(names)
+
+
+class TestSDKCompat:
+    """MCP SDK 版本兼容：import 路径必须能在 2.x 稳定路径上解析."""
+
+    def test_mcpserver_imported_from_public_path(self):
+        """MCPServer 应来自 mcp.server（2.x 公开路径），而非已废弃的 1.x 路径."""
+        from seriallens.mcp_server import MCPServer
+
+        assert MCPServer.__module__.startswith("mcp.server"), MCPServer.__module__
+
+    def test_import_chain_has_three_fallbacks(self):
+        """mcp_server.py 源码保留三级回退，缺任一级即报错."""
+        import inspect as _inspect
+
+        from seriallens import mcp_server
+
+        src = _inspect.getsource(mcp_server)
+        for path in ("mcp.server import MCPServer",
+                     "mcp.server.mcpserver import MCPServer",
+                     "mcp.server.fastmcp import FastMCP"):
+            assert path in src, f"missing fallback: {path}"
+
+    def test_server_reports_version(self):
+        """serverInfo.version 应等于包版本，客户端据此判断能力集."""
+        out = json.loads(_tool_fn("serial__server_info")())
+        import seriallens
+
+        assert out["version"] == seriallens.__version__

@@ -18,11 +18,18 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import time
 from pathlib import Path
 
-from mcp.server.mcpserver import MCPServer
+try:  # mcp 2.x 稳定公开路径
+    from mcp.server import MCPServer
+except ImportError:  # 2.x 早期子模块路径
+    try:
+        from mcp.server.mcpserver import MCPServer
+    except ImportError:  # mcp 1.x：FastMCP 即旧的 MCPServer
+        from mcp.server.fastmcp import FastMCP as MCPServer
 
 from . import __version__
 from .analyst import LLMConfig, analyze, build_prompt
@@ -33,8 +40,13 @@ from .profile import PROFILES_DIR, ProtocolProfile
 from .protocols import detect
 from .serial_port import RealSerial, TempSensorSource, list_ports
 
+_SERVER_KWARGS = {"version": __version__}
+if "version" not in inspect.signature(MCPServer.__init__).parameters:
+    _SERVER_KWARGS.pop("version")  # mcp 1.x 的 FastMCP 不接受 version
+
 mcp = MCPServer(
     "seriallens",
+    **_SERVER_KWARGS,
     instructions=(
         "SerialLens：AI 串口侦探。分析串口数据、自动波特率、学习协议字段、"
         "生成解码画像。无硬件时用 serial__demo_frames 生成靶场数据。"
